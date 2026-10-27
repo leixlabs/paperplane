@@ -66,6 +66,8 @@ form.addEventListener('submit', async (e) => {
   const el = $('statusSave');
   try {
     await persist();
+    // 摘要类型/输出语言属于 session 参数，改了就丢掉旧 session 立即释放内存
+    chrome.runtime.sendMessage({ type: 'L2T_AI_DISPOSE' }).catch(() => {});
     setStatus(el, '✓ 已保存', 'ok');
     setTimeout(() => setStatus(el, ''), 2500);
   } catch (err) {

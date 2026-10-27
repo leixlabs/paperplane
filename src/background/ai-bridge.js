@@ -69,6 +69,33 @@ function sendToOffscreen(message, timeoutMs) {
   });
 }
 
+/**
+ * 预热：把模型冷启动（把权重载入内存/显存）从「点击之后」挪到之前。
+ * 失败一律吞掉 —— 预热只是加速，真正调用还有自己的重试与降级。
+ */
+export async function warmupAI(settings = {}) {
+  if (settings.enableAI === false) return { ok: false, skipped: true };
+  try {
+    await ensureOffscreen();
+  } catch {
+    return { ok: false, skipped: true };
+  }
+  try {
+    const res = await sendToOffscreen({ type: 'L2T_AI_WARMUP', settings }, AI_TIMEOUT_MS);
+    return res || { ok: false };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
+
+/** 配置变了就把旧 session 丢掉，否则会一直用旧参数 */
+export async function disposeAISessions() {
+  try {
+    if (!(await hasOffscreen())) return;
+    await sendToOffscreen({ type: 'L2T_AI_DISPOSE' }, 5000);
+  } catch { /* noop */ }
+}
+
 /** 供配置页调用：探测模型可用性 */
 export async function probeAI() {
   try {

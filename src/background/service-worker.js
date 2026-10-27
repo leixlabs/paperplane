@@ -8,7 +8,7 @@
  */
 import { loadSettings, isConfigured } from './config.js';
 import { runPipeline } from './pipeline.js';
-import { probeAI } from './ai-bridge.js';
+import { probeAI, warmupAI } from './ai-bridge.js';
 import { getMe, sendMessage, normalizeChatId } from './telegram.js';
 import { buildMessage } from '../lib/markdown.js';
 import { escapeMdV2 } from '../lib/markdown.js';
@@ -68,6 +68,9 @@ async function handleSend(tab) {
     }
 
     await badge.setBusy('正在提取网页正文…');
+
+    // 提前点火：模型加载与正文提取并行跑，等提取完模型往往已经热了
+    warmupAI(settings).catch(() => {});
 
     const result = await runPipeline({
       tab,
@@ -130,6 +133,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(() => {
   // 上次异常退出可能残留 ERR 徽标
   badge.reset();
+  // 浏览器刚起来就把模型预热好，第一次点击就不用等冷启动
+  loadSettings().then((s) => { if (isConfigured(s)) warmupAI(s); }).catch(() => {});
 });
 
 /* ── 与 UI / offscreen 的消息通道 ───────────────────────── */

@@ -47,7 +47,18 @@
     'NAV', 'ASIDE', 'FOOTER'
   ]);
 
-  var NOISE_LINE = /^(分享|分享到|分享至|点赞|收藏|评论|上一篇|下一篇|相关阅读|推荐阅读|广告|本文来自|免责声明|返回顶部|加载中|阅读原文|扫码关注|关注我们|点击关注|展开全文|收起|更多|阅读全文|全文完|原创|转载)\s*[:：]?$/;
+  var NOISE_LINE = /^(分享|分享到|分享至|点赞|收藏|评论|上一篇|下一篇|相关阅读|推荐阅读|广告|本文来自|免责声明|返回顶部|加载中|阅读原文|扫码关注|关注我们|点击关注|展开全文|收起|更多|阅读全文|全文完|原创|转载|接下来播放|自动连播|稍后再看|登录后观看|立即登录|大会员|发消息|充电)\s*[:：]?$/;
+
+  /**
+   * 播放器 / 浏览器权限类的 UI 提示。这类文案在视频站上是「常驻可见文本」，
+   * 一旦页面本身没有正文，就会被当成正文抓走 —— B 站那个
+   * 「开启本地网络访问权限后刷新页面」就是这么混进摘要的。
+   */
+  var UI_HINT_LINE = /(查找并连接设备|本地网络访问权限|刷新页面即可|您可在浏览器通知中|您可以进入浏览器设置|请开启[^。]{0,10}权限后重试|您的浏览器不支持)/;
+
+  /** 视频站：这类站点的页面正文是播放器，真正的可读内容在 meta 简介里 */
+  var VIDEO_HOST = /(^|\.)(bilibili\.com|youtube\.com|youtu\.be|vimeo\.com|youku\.com|iqiyi\.com|v\.qq\.com|ixigua\.com|xigua\.video|douyin\.com|kuaishou\.com|twitch\.tv|dailymotion\.com|nicovideo\.jp)$/i;
+  var VIDEO_PATH = /\/video\/|\/bangumi\/|\/shorts\/|[?&]v=|bvid=|bilibili\.com\/list/i;
 
   function textOf(el, cache) {
     if (!el) return '';
@@ -249,6 +260,7 @@
       }
       if (line.length < 2) continue;
       if (NOISE_LINE.test(line)) continue;
+      if (UI_HINT_LINE.test(line)) continue;
       if (/^https?:\/\/\S+$/.test(line)) continue;
       if (line === prev) continue;
       out.push(line);
@@ -263,6 +275,37 @@
     return el ? (el.getAttribute('content') || '').trim() : '';
   }
 
+  /** 简介尾部常挂着「视频播放量 xx、弹幕量 xx」这类统计，砍掉 */
+  function cleanVideoDesc(d) {
+    return String(d || '')
+      .replace(/[,，、;；\s]*(视频播放量|播放量|弹幕量|点赞数|投硬币枚数|硬币枚数|评论数|收藏数|转发数)[\s\S]*$/i, '')
+      .trim();
+  }
+
+  /** 去掉「xxx_哔哩哔哩_bilibili」「xxx - YouTube」这类站名尾巴 */
+  function stripVideoSuffix(t) {
+    return String(t || '')
+      .replace(/[_\-–—|\s]*(哔哩哔哩|bilibili)[_\-–—|\s]*$/i, '')
+      .replace(/[_\-–—|\s]*(哔哩哔哩|bilibili)[_\-–—|\s]*$/i, '')
+      .replace(/[_\-–—|\s]*YouTube[_\-–—|\s]*$/i, '')
+      .trim();
+  }
+
+  /** 视频页正文：标题 + 简介（+UP 主），这是页面上唯一的可读内容 */
+  function videoBodyText() {
+    var parts = [];
+    var t = stripVideoSuffix((meta('og:title') || document.title || '').trim());
+    if (t) parts.push('视频标题：' + t);
+
+    var up = (meta('author') || meta('article:author') || '').trim();
+    if (up) parts.push('作者/UP 主：' + up);
+
+    var d = cleanVideoDesc(meta('og:description') || meta('description') || meta('twitter:description'));
+    if (d) parts.push('视频简介：' + d.slice(0, 1500));
+
+    return parts.join('\n');
+  }
+
   function countWords(text) {
     var cjk = (text.match(/[\u4e00-\u9fa5\u3040-\u30ff]/g) || []).length;
     var latin = (text.match(/[A-Za-z0-9'’\-]+/g) || []).length;
@@ -272,39 +315,55 @@
   function extract() {
     var cache = new Map();
 
-    var container = bySemantic(cache) || byScoring(cache);
-    var text = container ? cleanLines(visibleText(container)) : '';
+    // ── 视频页：正文不在 DOM 里，在 meta 简介里 ──
+    var host = location.hostname || '';
+    var ogType = meta('og:type') || '';
+    var videoPage = /^video\b/i.test(ogType) ||
+      (VIDEO_HOST.test(host) && VIDEO_PATH.test(location.href || ''));
 
-    if (text.length < 120) {
-      // 兜底：容器选错时退回整页（噪音子树仍会被跳过）
-      container = document.body;
-      text = cleanLines(visibleText(document.body));
+    var container = null;
+    var text = '';
+
+    if (videoPage) {
+      text = cleanLines(videoBodyText());
+    } else {
+      container = bySemantic(cache) || byScoring(cache);
+      text = container ? cleanLines(visibleText(container)) : '';
+
+      if (text.length < 120) {
+        // 兜底：容器选错时退回整页（噪音子树仍会被跳过）
+        container = document.body;
+        text = cleanLines(visibleText(document.body));
+      }
     }
 
     var headings = [];
-    try {
-      var scope = container || document;
-      var hs = scope.querySelectorAll('h1,h2,h3');
-      for (var i = 0; i < hs.length && headings.length < 12; i++) {
-        var h = (hs[i].textContent || '').trim().replace(/\s+/g, ' ');
-        if (h && h.length >= 2 && h.length <= 120 && headings.indexOf(h) === -1) headings.push(h);
-      }
-      // 容器选得比较内层时（如 .post-content），标题往往在外层，回退到全文档但跳过噪音区
-      if (headings.length < 2) {
-        var all = document.querySelectorAll('h1,h2,h3');
-        for (var m = 0; m < all.length && headings.length < 8; m++) {
-          if (hasNoiseAncestor(all[m])) continue;
-          var hh = (all[m].textContent || '').trim().replace(/\s+/g, ' ');
-          if (hh && hh.length >= 2 && hh.length <= 120 && headings.indexOf(hh) === -1) headings.push(hh);
+    if (!videoPage) {
+      try {
+        var scope = container || document;
+        var hs = scope.querySelectorAll('h1,h2,h3');
+        for (var i = 0; i < hs.length && headings.length < 12; i++) {
+          var h = (hs[i].textContent || '').trim().replace(/\s+/g, ' ');
+          if (h && h.length >= 2 && h.length <= 120 && headings.indexOf(h) === -1) headings.push(h);
         }
-      }
-    } catch (e) { /* noop */ }
+        // 容器选得比较内层时（如 .post-content），标题往往在外层，回退到全文档但跳过噪音区
+        if (headings.length < 2) {
+          var all = document.querySelectorAll('h1,h2,h3');
+          for (var m = 0; m < all.length && headings.length < 8; m++) {
+            if (hasNoiseAncestor(all[m])) continue;
+            var hh = (all[m].textContent || '').trim().replace(/\s+/g, ' ');
+            if (hh && hh.length >= 2 && hh.length <= 120 && headings.indexOf(hh) === -1) headings.push(hh);
+          }
+        }
+      } catch (e) { /* noop */ }
+    }
 
     var title = (meta('og:title') || meta('twitter:title') || document.title || '').trim();
     if (!title) {
       var h1 = document.querySelector('h1');
       if (h1) title = (h1.textContent || '').trim();
     }
+    if (videoPage) title = stripVideoSuffix(title);
 
     var desc = (meta('og:description') || meta('description') || meta('twitter:description') || '').trim();
 
@@ -314,6 +373,17 @@
     var lang = (document.documentElement.getAttribute('lang') || '').toLowerCase();
     var isCJK = !lang || /^(zh|ja|ko)/.test(lang) || /[\u4e00-\u9fa5]/.test(text.slice(0, 400));
     var wc = countWords(text);
+
+    // 视频页连简介都没有 —— 明确失败，好过把播放器 UI 当成内容发出去
+    if (videoPage && text.length < 30) {
+      return {
+        ok: false,
+        reason: '这是视频页，但页面没有可摘要的标题/简介（视频内容本身无法离线提取）',
+        videoPage: true,
+        title: title.slice(0, 300),
+        url: url,
+      };
+    }
 
     return {
       ok: true,
@@ -327,9 +397,10 @@
       text: text,
       charCount: text.length,
       wordCount: wc.total,
+      videoPage: Boolean(videoPage),
       contentType: meta('og:type') || '',
-      extractedFrom: container ? (container.tagName + (container.id ? '#' + container.id : '') +
-        (container.className && typeof container.className === 'string' ? '.' + container.className.trim().split(/\s+/)[0] : '')) : 'NONE'
+      extractedFrom: videoPage ? 'video-meta' : (container ? (container.tagName + (container.id ? '#' + container.id : '') +
+        (container.className && typeof container.className === 'string' ? '.' + container.className.trim().split(/\s+/)[0] : '')) : 'NONE')
     };
   }
 

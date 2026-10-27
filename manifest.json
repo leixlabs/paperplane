@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Paperplane · 一键 AI 摘要推 TG",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "点击一下图标，用浏览器本地 AI（Gemini Nano）把当前网页提炼成要点，直发 Telegram 频道。零后端、零 API Key。",
   "minimum_chrome_version": "127",
 

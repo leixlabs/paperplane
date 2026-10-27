@@ -38,11 +38,21 @@ export async function extractPage(tabId) {
   });
 
   const page = results?.[0]?.result;
-  if (!page || !page.text) {
+  if (!page || page.ok === false) {
+    throw new Error(page?.reason || '正文提取失败（页面可能尚未加载完成，或内容在跨域 iframe 中）');
+  }
+  if (!page.text) {
     throw new Error('正文提取失败（页面可能尚未加载完成，或内容在跨域 iframe 中）');
   }
-  if (page.text.length < 120) {
-    throw new Error(`正文过短（仅 ${page.text.length} 字），可能不是文章页`);
+
+  // 视频页只有标题+简介，天然比文章短，用更低的门槛
+  const minLen = page.videoPage ? 30 : 120;
+  if (page.text.length < minLen) {
+    throw new Error(
+      page.videoPage
+        ? `视频简介过短（仅 ${page.text.length} 字），没什么可摘要的`
+        : `正文过短（仅 ${page.text.length} 字），可能不是文章页`
+    );
   }
   return page;
 }

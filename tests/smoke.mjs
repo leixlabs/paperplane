@@ -203,7 +203,8 @@ const a = 1 * 2;
   };
   const text = '这是一段足够长的中文正文，用来触发一次真实的摘要调用。'.repeat(30);
 
-  const calls = [];
+  const calls = [];      // create() 的参数
+  const sumCalls = [];   // summarize() 的参数
   const stubApi = (onCreate) => {
     globalThis.Summarizer = {
       availability: async () => 'available',
@@ -213,24 +214,31 @@ const a = 1 * 2;
       },
     };
   };
-  const okSession = () => ({ summarize: async () => '• 要点一\n• 要点二', destroy() {} });
+  const okSession = () => ({
+    summarize: async (t, o) => { sumCalls.push({ text: t, opts: o }); return '• 要点一\n• 要点二'; },
+    destroy() {},
+  });
 
   const ai = await import('../src/offscreen/ai.js');
+  const reset = () => { ai.disposeSessions(); calls.length = 0; sumCalls.length = 0; };
 
   // zh 不在白名单 → 绝不能传 outputLanguage，否则请求直接 abort
-  calls.length = 0;
+  reset();
   stubApi(async () => okSession());
   await ai.summarizeWithNano(text, { ...base, outputLanguage: 'zh' }, { title: '标题' });
   assert.equal(calls[0].outputLanguage, undefined, 'zh 不应出现在参数里');
-  assert.ok(calls[0].sharedContext.includes('简体中文'), 'zh 应改用 sharedContext 提示');
+  // 逐页上下文必须走 summarize()，绝不能进 create() —— 否则 session 缓存失效
+  assert.equal(calls[0].sharedContext, undefined, 'create() 不应带 sharedContext（会破坏 session 复用）');
+  assert.ok(sumCalls[0].opts.context.includes('简体中文'), 'zh 应改用 summarize 的 context 提示');
+  assert.ok(sumCalls[0].opts.context.includes('标题'), '网页标题应随每次调用传入');
 
   // en 在白名单 → 正常传
-  calls.length = 0;
+  reset();
   await ai.summarizeWithNano(text, { ...base, outputLanguage: 'en' }, { title: '标题' });
   assert.equal(calls[0].outputLanguage, 'en', 'en 应正常传递');
 
   // 严格校验拒绝 outputLanguage → 应自动去掉参数重试，而不是整个失败
-  calls.length = 0;
+  reset();
   stubApi(async (opts) => {
     if (opts.outputLanguage) {
       throw new Error('Unsupported Summarizer API languages were specified, and the request was aborted.');
@@ -244,6 +252,79 @@ const a = 1 * 2;
 
   delete globalThis.Summarizer;
   ok('outputLanguage 白名单 + 语言报错自动重试');
+}
+
+/* ── 10. Session 复用：换网页不再重新加载模型 ──────────── */
+{
+  const base = {
+    summaryType: 'key-points', summaryLength: 'medium', summaryFormat: 'markdown',
+    maxInputChars: 12000, mapReduceThreshold: 9000, outputLanguage: 'zh',
+  };
+  const text = '这是一段足够长的中文正文，用来触发一次真实的摘要调用。'.repeat(30);
+
+  const created = [];
+  const destroyed = [];
+  globalThis.Summarizer = {
+    availability: async () => 'available',
+    create: async (opts) => {
+      created.push(opts);
+      const id = created.length;
+      return {
+        summarize: async () => `• 第${id}次会话产出的要点`,
+        destroy() { destroyed.push(id); },
+      };
+    },
+  };
+
+  const ai = await import('../src/offscreen/ai.js');
+  ai.disposeSessions();
+
+  // 同一个会话连续处理三个不同网页
+  const pages = [
+    { title: '页面一', siteName: '站A' },
+    { title: '页面二', siteName: '站B' },
+    { title: '页面三', siteName: '站C' },
+  ];
+  for (const p of pages) {
+    await ai.summarizeWithNano(text, base, p, () => {});
+  }
+
+  assert.equal(created.length, 1, `三个网页只应 create 一次，实际 ${created.length} 次`);
+  assert.equal(destroyed.length, 0, '用完不应立即 destroy，否则下次还是冷启动');
+
+  // 换一组摘要参数 → 才是新的 session
+  await ai.summarizeWithNano(text, { ...base, summaryType: 'tl;dr' }, { title: '页面四' });
+  assert.equal(created.length, 2, '换了摘要类型才该新建 session');
+
+  // 预热：提前建好，真正调用时直接命中
+  ai.disposeSessions();
+  created.length = 0;
+  const w = await ai.warmUp(base, () => {});
+  assert.equal(w.ok, true, '预热应成功');
+  assert.equal(created.length, 1, '预热应建好 session');
+  await ai.summarizeWithNano(text, base, { title: '页面五' });
+  assert.equal(created.length, 1, '预热后正式调用不应再 create');
+
+  // session 坏了要能自愈：失败丢弃，下次重建
+  ai.disposeSessions();
+  created.length = 0;
+  let n = 0;
+  globalThis.Summarizer.create = async () => {
+    n += 1;
+    return { summarize: async () => { if (n === 1) throw new Error('session 已失效'); return '• 恢复后的要点'; }, destroy() {} };
+  };
+  await assert.rejects(
+    () => ai.summarizeWithNano(text, base, { title: '页面六' }),
+    /session 已失效/,
+    '第一次应把错误抛出去'
+  );
+  const back = await ai.summarizeWithNano(text, base, { title: '页面七' });
+  assert.equal(n, 2, `坏 session 应被丢弃并重建，实际 create 了 ${n} 次`);
+  assert.ok(back.summary.includes('恢复后'), '重建后应能正常摘要');
+
+  ai.disposeSessions();
+  delete globalThis.Summarizer;
+  ok('Session 复用：换网页不重载 / 换参数才重建 / 坏 session 自愈');
 }
 
 console.log(`\n全部通过：${pass} 组断言\n`);

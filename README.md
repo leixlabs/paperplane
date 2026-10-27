@@ -129,7 +129,20 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | 429 限流 | 按 `retry_after` 等待后重试一次 |
 | 消息超长 | 按行分片，首片带预览卡片 |
 
-**7. 硬编码 Token 的取舍。** 自家插件写死 token 免了整条后端链路，但要知道：token 明文存在扩展目录里，能被同机进程读到；`chrome.storage.local` 同样是明文。别把带这个 token 的 crx 传给别人。
+**7. Session 复用：模型只加载一次。** Gemini Nano 的权重只在**首次**真正下载；但 `Summarizer.create()` 每次都会把约 2GB 权重重新载入内存并重建执行流水线（冷启动），短则数秒、长则几十秒 —— 体感就是「换个网页又下载了一遍」。官方也说了 Summarizer 不像 Prompt API 那样保留上下文，**本来就是设计来跨任务复用的**。
+
+所以 `src/offscreen/ai.js` 维护了一个 session 池：
+
+- key 只有 `{type, length, format, language}`，**绝不能掺入随页面变化的内容**；
+- 因此逐页的标题/站点名不再走 `create()` 的 `sharedContext`，改由 `summarize(text, { context })` 传入；
+- 用完不 `destroy()`，转为 10 分钟空闲计时；session 出错会被丢弃重建；
+- 浏览器启动 + 点击瞬间各预热一次，把冷启动的等待挪到点击之前。
+
+改动摘要类型 / 输出语言会产生新的 key，自然重建；设置页保存时也会主动丢弃旧 session。
+
+**8. 视频页走 meta 简介，不走 DOM。** B 站这类页面 DOM 里只有播放器和周边 UI，没有正文。提取器识别 `og:type=video*`（或视频站域名 + `/video/`、`watch?v=` 等路径）后，改用「标题 + UP 主 + 简介」当正文，并剥掉「视频播放量 / 弹幕量 / 投硬币枚数」这类统计尾巴。同时加了一条通用的 UI 提示过滤（「查找并连接设备」「本地网络访问权限」「刷新页面即可」…），避免播放器遮罩在任何站点上被误当正文。连简介都没有的视频页会明确报错，而不是发一堆 UI 文案出去。
+
+**9. 硬编码 Token 的取舍。** 自家插件写死 token 免了整条后端链路，但要知道：token 明文存在扩展目录里，能被同机进程读到；`chrome.storage.local` 同样是明文。别把带这个 token 的 crx 传给别人。
 
 ---
 
@@ -141,7 +154,9 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | 「频道不存在（chat not found）」 | 频道 ID 写错，或 Bot 没被加进频道 |
 | 「仅支持 http / https 网页」 | 在 `chrome://`、扩展商店、PDF 阅读器上点了图标 |
 | 「正文过短」 | 不是文章页（首页/列表页），或正文在跨域 iframe 里 |
-| 一直显示 `···` 且模型没反应 | 首次调用在下载模型（1~2GB），看悬停文案的百分比 |
+| 一直显示 `···` 且模型没反应 | 首次调用在下载模型（1~2GB），看悬停文案的百分比。之后同一组参数会复用 session，不再重复加载 |
+| 摘要里混进「本地网络访问权限」「查找并连接设备」 | 视频页（B 站等）没有正文，抓到了播放器遮罩。已改为走 meta 简介；若仍出现说明该站未被识别为视频页，检查 `og:type` |
+| 「这是视频页，但没有可摘要的标题/简介」 | 该视频没有简介，视频本体无法离线提取，属预期行为 |
 | 「Unsupported Summarizer API languages」 | 输出语言选了 Chrome 白名单外的（如 `zh`）。插件会自动省略该参数、让模型跟随原文输出；若仍报错，设置页改选 `English` |
 | 模型始终 `unavailable` | `chrome://flags/#optimization-guide-on-device-model` 设 `Enabled BypassPerfRequirement`，再去 `chrome://components` 更新 *Optimization Guide On Device Model*；需 Chrome 127+、磁盘 ≥22GB、显存 ≥4GB |
 

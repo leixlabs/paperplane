@@ -16,6 +16,85 @@ const MAX_CHUNKS = 6;
 const CHUNK_MIN = 2500;
 
 /**
+ * Session 池 —— 这是「换个网页又要等一遍模型」的根治点。
+ *
+ * Chrome 的 on-device 模型只在第一次真正下载；之后每次 Summarizer.create()
+ * 仍要把约 2GB 的权重重新加载进内存并重建执行流水线（冷启动），短则数秒、
+ * 长则几十秒 —— 体感上就是「又下载了一遍」。
+ *
+ * 官方明确说过：Unlike the Prompt API, the Writer, Rewriter and Summarizer API
+ * are designed to be reused. 它们不保留上下文，同一个 session 可以安全地用于
+ * 互不相关的任务。
+ *
+ * 所以这里按「参数组合」缓存 session 并跨网页复用。关键点：
+ *   - key 只包含 {type,length,format,language}，绝不能掺入随页面变化的内容，
+ *     否则每个网页都是一个新 key，缓存等于没有；
+ *   - 因此 sharedContext 不再进 create()，逐页的上下文改由 summarize(text, {context})
+ *     传入（本来就在传）；
+ *   - 空闲 SESSION_IDLE_MS 后才 destroy()，避免长期占内存。
+ */
+const sessions = new Map();
+const SESSION_IDLE_MS = 10 * 60 * 1000;
+
+function sessionKey(o) {
+  return [o.type, o.length, o.format, o.language || ''].join('|');
+}
+
+/** 从 settings 推导 create() 参数（不含任何随页面变化的内容） */
+function sessionOpts(settings = {}) {
+  const lang = String(settings.outputLanguage || '').toLowerCase();
+  return {
+    type: apiType(settings.summaryType),
+    length: settings.summaryLength || 'medium',
+    format: settings.summaryFormat || 'markdown',
+    language: SUPPORTED_OUTPUT_LANGS.has(lang) ? lang : '',
+  };
+}
+
+/** 取一个 session；同参数并发调用共享同一个 create() promise */
+function acquireSession(key, opt, onProgress) {
+  const hit = sessions.get(key);
+  if (hit) {
+    if (hit.timer) {
+      clearTimeout(hit.timer);
+      hit.timer = null;
+    }
+    return hit.promise;
+  }
+
+  const promise = createSummarizer(opt, onProgress).catch((err) => {
+    sessions.delete(key); // 创建失败不留坑，下次重新尝试
+    throw err;
+  });
+  sessions.set(key, { promise, timer: null });
+  return promise;
+}
+
+/** 用完后转为「空闲计时」，到点再真正释放 */
+function releaseSession(key) {
+  const entry = sessions.get(key);
+  if (!entry || entry.timer) return;
+  entry.timer = setTimeout(() => {
+    try { dropSession(key); } catch { /* noop */ }
+  }, SESSION_IDLE_MS);
+}
+
+/** 立即释放（session 损坏或用户改了配置时用） */
+function dropSession(key) {
+  const entry = sessions.get(key);
+  if (!entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  sessions.delete(key);
+  Promise.resolve(entry.promise)
+    .then((s) => { try { s?.destroy?.(); } catch { /* noop */ } })
+    .catch(() => {});
+}
+
+export function disposeSessions() {
+  for (const key of [...sessions.keys()]) dropSession(key);
+}
+
+/**
  * Chrome 内置 AI 的 outputLanguage 白名单（由 API 报错信息给出）。
  * 传白名单外的值（zh / ko / ru …）会让整个 create() 请求 abort。
  * 中文等语言改为「不传该参数」，让模型跟随输入语言输出，效果反而更好。
@@ -143,13 +222,10 @@ async function createSummarizer(opt, onProgress) {
     );
   }
 
-  const rich = {
-    type,
-    length,
-    format,
-    sharedContext: opt.context || '',
-    monitor,
-  };
+  // 注意：这里刻意不传 sharedContext。它是 create() 参数的一部分，
+  // 一旦塞进网页标题/站点名，每个页面都会变成新的参数组合，session 缓存
+  // 就失效了。逐页上下文统一走 summarize(text, { context })。
+  const rich = { type, length, format, monitor };
   if (canSetLang) rich.outputLanguage = lang;
 
   const minimal = { type, length, format, monitor };
@@ -201,18 +277,22 @@ export async function summarizeWithNano(rawText, settings, page = {}, onProgress
   const baseContext = [
     page.title ? `网页标题：${page.title}` : '',
     page.siteName ? `来源站点：${page.siteName}` : '',
+    // 视频页没有正文，送进去的是标题+简介。不说清楚的话模型会当成残缺文章，
+    // 输出「文章未给出足够信息」之类的废话。
+    page.videoPage ? '这是一个视频页面，下面的内容是该视频的标题与简介，不是文章正文。请据此概括这个视频讲了什么。' : '',
     settings.outputLanguage === 'zh' ? '请用简体中文输出。' : '',
   ].filter(Boolean).join('\n');
 
-  onProgress?.({ stage: 'creating', message: '正在准备本地模型…' });
+  const opts = sessionOpts(settings);
+  const key = sessionKey(opts);
+  const reused = sessions.has(key);
 
-  const summarizer = await createSummarizer({
-    type: settings.summaryType,
-    length: settings.summaryLength,
-    format: settings.summaryFormat,
-    language: settings.outputLanguage,
-    context: truncate(baseContext, 400),
-  }, onProgress);
+  onProgress?.({
+    stage: reused ? 'warm' : 'creating',
+    message: reused ? '复用已加载的本地模型…' : '正在加载本地模型（之后会复用，无需重复加载）…',
+  });
+
+  const summarizer = await acquireSession(key, opts, onProgress);
 
   try {
     // ── 短文：一次直出 ──
@@ -275,8 +355,34 @@ export async function summarizeWithNano(rawText, settings, page = {}, onProgress
       engine: 'gemini-nano(map-reduce)',
       chunks: partials.length,
     };
+  } catch (err) {
+    // session 可能已被系统回收或进入坏状态，丢掉它，下次调用重建一个。
+    // 否则一次偶发失败会把坏 session 永久留在池里。
+    dropSession(key);
+    throw err;
   } finally {
-    try { summarizer.destroy?.(); } catch { /* noop */ }
+    releaseSession(key);
+  }
+}
+
+/**
+ * 预热：提前建好 session，把冷启动的等待从「点击之后」挪到「点击之前」。
+ * 官方建议 —— 别等用户按下生成才初始化 session。
+ */
+export async function warmUp(settings, onProgress) {
+  const opts = sessionOpts(settings);
+  const key = sessionKey(opts);
+  if (sessions.has(key)) {
+    onProgress?.({ stage: 'warm', message: '本地模型已就绪' });
+    return { ok: true, reused: true, key };
+  }
+  onProgress?.({ stage: 'creating', message: '正在预热本地模型…' });
+  try {
+    await acquireSession(key, opts, onProgress);
+    releaseSession(key);
+    return { ok: true, reused: false, key };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err), key };
   }
 }
 

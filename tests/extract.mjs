@@ -33,6 +33,11 @@ const HTML = `<!DOCTYPE html>
       <article class="post">
         <h1>从零理解 Chrome 内置 AI</h1>
         <div class="post-meta">2026-10-20 · 阅读 12 分钟</div>
+        <div class="player-mask">
+          <p>您可在浏览器通知中允许 blog.example.com 查找并连接设备请求。</p>
+          <p>您可以进入浏览器设置，找到 www.blog.example.com，开启 "本地网络访问权限"。</p>
+          <p>开启 "本地网络访问权限" 后刷新页面即可正常播放视频。</p>
+        </div>
         <div class="post-content">
           <p>Chrome 内置 AI 的本质，是把一个约 40 亿参数的轻量模型直接塞进浏览器安装包，让网页和扩展都能在本地调用它。这意味着推理不经过任何服务器。</p>
           <p>对扩展开发者来说，最直接的变化是不再需要 API Key，也不需要为自己的密钥管理写一套后端。你只需要在 manifest 里申请权限，然后调用全局对象即可。</p>
@@ -67,6 +72,47 @@ const HTML = `<!DOCTYPE html>
 const dom = new JSDOM(HTML, { url: 'https://blog.example.com/chrome-builtin-ai' });
 const { window } = dom;
 
+/* ── 场景 2：B 站视频页 ──────────────────────────────────
+   视频页没有正文，正文在 meta 简介里。DOM 上那些「本地网络访问权限」
+   之类的播放器提示绝不能被当成正文抓走。 */
+const BILI_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <title>在AI里抛硬币，概率是50%吗？_哔哩哔哩_bilibili</title>
+  <meta name="author" content="影视飓风">
+  <meta name="description" content="抛硬币你应该很熟悉，正面朝上的概率大概是50%，但如果我让AI反复抛硬币，它正面朝上的概率，还是50%吗？这听起来是个有点无厘头的问题，但它背后其实隐藏着现在科技界的巨大分水岭，这一次，我们想和你一起看看，AI投硬币这个小动作背后，到底发生了什么……, 视频播放量 7943947、弹幕量 5986、点赞数 398913、投硬币枚数 696">
+  <meta property="og:type" content="video.other">
+  <meta property="og:title" content="在AI里抛硬币，概率是50%吗？_哔哩哔哩_bilibili">
+  <meta property="og:description" content="抛硬币你应该很熟悉，正面朝上的概率大概是50%，但如果我让AI反复抛硬币，它正面朝上的概率，还是50%吗？这听起来是个有点无厘头的问题，但它背后其实隐藏着现在科技界的巨大分水岭，这一次，我们想和你一起看看，AI投硬币这个小动作背后，到底发生了什么……, 视频播放量 7943947、弹幕量 5986、点赞数 398913、投硬币枚数 696">
+  <meta property="og:site_name" content="哔哩哔哩">
+  <meta property="og:url" content="https://www.bilibili.com/video/BV1Wzjg65EM6/">
+  <link rel="canonical" href="https://www.bilibili.com/video/BV1Wzjg65EM6/">
+</head>
+<body>
+  <div id="app">
+    <div class="bili-player">
+      <div class="player-mask">
+        <p>您可在浏览器通知中允许 bilibili.com 查找并连接设备请求。</p>
+        <p>您可以进入浏览器设置，找到 www.bilibili.com，开启 "本地网络访问权限"。</p>
+        <p>开启 "本地网络访问权限" 后刷新页面即可正常播放视频。</p>
+      </div>
+    </div>
+    <div class="video-info">
+      <h1>在AI里抛硬币，概率是50%吗？</h1>
+      <div class="up-info"><span>影视飓风</span><span>关注 1883万</span></div>
+      <div class="stats"><span>794.3万</span><span>5986</span><span>39.9万</span></div>
+    </div>
+    <div class="recommend">
+      <h3>接下来播放</h3>
+      <ul>
+        <li><a href="/video/BV2xx">AI可以取代我，那我的意义是？</a></li>
+        <li><a href="/video/BV3xx">带着100万，我们见了成人网红</a></li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>`;
+
 // jsdom 没有实现 innerText，这里做一个接近浏览器的近似实现
 const BLOCK = new Set(['P', 'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'ASIDE', 'HEADER', 'FOOTER',
   'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'UL', 'OL', 'BLOCKQUOTE', 'PRE', 'TABLE', 'TR', 'BR', 'NAV']);
@@ -87,21 +133,28 @@ function innerTextOf(node) {
   return out;
 }
 
-Object.defineProperty(window.HTMLElement.prototype, 'innerText', {
-  get() { return innerTextOf(this).replace(/\n{2,}/g, '\n').trim(); },
-  configurable: true,
-});
+function installInnerText(win) {
+  Object.defineProperty(win.HTMLElement.prototype, 'innerText', {
+    get() { return innerTextOf(this).replace(/\n{2,}/g, '\n').trim(); },
+    configurable: true,
+  });
+}
 
-// 把提取器脚本放进 jsdom 的全局环境里执行
-globalThis.window = window;
-globalThis.document = window.document;
-globalThis.location = window.location;
-
+/** 把提取器脚本放进指定 jsdom 的全局环境里执行并返回提取结果 */
 const src = readFileSync(path.join(here, '../src/content/extractor.js'), 'utf8');
-new Function(src)();
 
-assert.equal(typeof globalThis.__LINK2TELE_EXTRACTOR__, 'function', '提取器未挂载到全局');
-const page = globalThis.__LINK2TELE_EXTRACTOR__();
+function runExtractor(win) {
+  installInnerText(win);
+  globalThis.window = win;
+  globalThis.document = win.document;
+  globalThis.location = win.location;
+  new Function(src)();
+  assert.equal(typeof globalThis.__LINK2TELE_EXTRACTOR__, 'function', '提取器未挂载到全局');
+  return globalThis.__LINK2TELE_EXTRACTOR__();
+}
+
+/* ── 场景 1：文章页 ── */
+const page = runExtractor(window);
 
 console.log('--- 提取结果 ---');
 console.log('title      :', page.title);
@@ -125,12 +178,68 @@ assert.ok(page.text.includes('Windows 对象') === false, 'sanity');
 assert.ok(page.text.includes('40 亿参数'), '正文首段缺失');
 assert.ok(page.text.includes('降级策略') || page.text.includes('抽取式摘要'), '正文末段缺失');
 
-// 噪音必须剔除
+// 噪音必须剔除（含播放器/浏览器权限类的 UI 提示）
 console.log('\n噪音检查：');
-for (const noise of ['Manifest V3 迁移指南', 'ICP 备', '收藏了', '首页', '阅读 12 分钟']) {
+for (const noise of [
+  'Manifest V3 迁移指南', 'ICP 备', '收藏了', '首页', '阅读 12 分钟',
+  '查找并连接设备', '本地网络访问权限', '刷新页面即可',
+]) {
   const hit = page.text.includes(noise);
   console.log(`  ${hit ? '✗ 泄漏' : '✓ 已剔除'}  ${noise}`);
   assert.equal(hit, false, `噪音未剔除：${noise}`);
 }
 
-console.log('\n采集层通过：正文命中、噪音剔除。\n');
+console.log('\n场景 1 通过：正文命中、噪音剔除。\n');
+
+/* ── 场景 2：B 站视频页 ── */
+const biliDom = new JSDOM(BILI_HTML, { url: 'https://www.bilibili.com/video/BV1Wzjg65EM6/' });
+const vpage = runExtractor(biliDom.window);
+
+console.log('--- B 站视频页提取结果 ---');
+console.log('title      :', vpage.title);
+console.log('videoPage  :', vpage.videoPage);
+console.log('siteName   :', vpage.siteName);
+console.log('author     :', vpage.author);
+console.log('container  :', vpage.extractedFrom);
+console.log('charCount  :', vpage.charCount);
+console.log('text       :\n' + vpage.text);
+console.log('--------------------------');
+
+assert.equal(vpage.ok, true, '视频页应提取成功：' + vpage.reason);
+assert.equal(vpage.videoPage, true, '未识别为视频页（og:type=video.other）');
+assert.equal(vpage.extractedFrom, 'video-meta', '视频页应走 meta 简介，而不是 DOM 正文');
+assert.equal(vpage.title, '在AI里抛硬币，概率是50%吗？', '标题应去掉 _哔哩哔哩_bilibili 尾巴');
+assert.equal(vpage.author, '影视飓风');
+assert.ok(vpage.charCount > 80, '视频简介过少：' + vpage.charCount);
+
+// 简介正文必须在
+assert.ok(vpage.text.includes('抛硬币'), '视频简介缺失');
+assert.ok(vpage.text.includes('分水岭'), '视频简介被截断');
+
+// 播放器 UI 与统计数字必须剔除
+console.log('\n视频页噪音检查：');
+for (const noise of [
+  '查找并连接设备', '本地网络访问权限', '刷新页面即可',
+  '视频播放量', '弹幕量', '投硬币枚数', '接下来播放', '关注 1883万',
+]) {
+  const hit = vpage.text.includes(noise);
+  console.log(`  ${hit ? '✗ 泄漏' : '✓ 已剔除'}  ${noise}`);
+  assert.equal(hit, false, `视频页噪音未剔除：${noise}`);
+}
+
+console.log('\n场景 2 通过：视频页走简介、播放器提示与统计数字已剔除。');
+
+/* ── 场景 3：视频页连简介都没有 → 明确失败，而不是发一堆播放器 UI ── */
+const emptyDom = new JSDOM(
+  `<!DOCTYPE html><html lang="zh-CN"><head>
+     <title>x</title><meta property="og:type" content="video.other">
+   </head><body><div class="p">您可在浏览器通知中允许 a.com 查找并连接设备请求。</div></body></html>`,
+  { url: 'https://vimeo.com/video/123' }
+);
+const epage = runExtractor(emptyDom.window);
+assert.equal(epage.ok, false, '无简介的视频页应明确失败');
+assert.match(epage.reason, /视频页/, '失败原因应说明是视频页');
+console.log('场景 3 通过：无简介的视频页明确报出「' + epage.reason + '」');
+
+console.log('\n采集层全部通过：文章页正文命中、视频页走简介、UI 噪音剔除。\n');
+process.exit(0);
