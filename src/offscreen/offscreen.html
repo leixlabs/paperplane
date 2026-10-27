@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Link2Tele · AI Worker</title>
+</head>
+<body>
+  <!--
+    隐藏页面：只为给 Chrome Built-in AI 提供 window 环境。
+    Service Worker 里没有 window，无法访问 Summarizer / window.ai。
+  -->
+  <script type="module" src="offscreen.js"></script>
+</body>
+</html>

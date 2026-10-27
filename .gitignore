@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+
+# 打包产物。*.pem 是 Chrome 打包时生成的私钥，泄露后别人能冒名发布同名扩展，
+# *.crx / *.zip 同理，一律不进仓库。
+dist/
+build/
+*.zip
+*.crx
+*.pem
+
+# 本地环境
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+*.local
+
+# 工作区记忆（本地会话日志，不随代码发布）
+.workbuddy/

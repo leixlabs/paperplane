@@ -1,0 +1,11 @@
+{
+  "name": "link2tele",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome MV3 extension: one-click local-AI page summary to a Telegram channel",
+  "scripts": {
+    "test": "node tests/smoke.mjs",
+    "icons": "python3 tools/gen_icons.py"
+  }
+}

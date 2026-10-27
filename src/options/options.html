@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Link2Tele 设置</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </div>
+      <div>
+        <h1>Link2Tele</h1>
+        <p class="sub">点击工具栏图标 → 本地 AI 摘要 → 直发 Telegram 频道</p>
+      </div>
+    </header>
+
+    <div class="notice">
+      <strong>零后端架构</strong>
+      <span>网页正文只在本机由 Chrome 内置 AI（Gemini Nano）处理，仅最终摘要通过 HTTPS 发往 <code>api.telegram.org</code>。</span>
+    </div>
+
+    <form id="form">
+      <!-- ① 连接 -->
+      <section class="card">
+        <h2><span class="idx">1</span> Telegram 连接</h2>
+
+        <div class="field">
+          <label for="botToken">BOT_TOKEN</label>
+          <div class="input-row">
+            <input id="botToken" name="botToken" type="password" spellcheck="false"
+                   autocomplete="off" placeholder="123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+            <button type="button" class="ghost" id="toggleToken" aria-label="显示/隐藏 Token">显示</button>
+          </div>
+          <p class="hint">在 Telegram 找 <code>@BotFather</code> → <code>/newbot</code> 获取。也可直接写死在 <code>src/background/config.js</code>。</p>
+        </div>
+
+        <div class="field">
+          <label for="channelId">CHANNEL_ID</label>
+          <input id="channelId" name="channelId" type="text" spellcheck="false"
+                 placeholder="@my_channel 或 -1001234567890" />
+          <p class="hint">用 <code>@用户名</code> 最省事；私有频道请填 <code>-100…</code> 数字 ID。务必先把 Bot 拉进频道并设为<b>管理员（可发布消息）</b>。</p>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="primary" id="btnTestSend">测试发送</button>
+          <button type="button" class="ghost" id="btnTestConn">校验 Bot 身份</button>
+          <span class="status" id="statusConn"></span>
+        </div>
+      </section>
+
+      <!-- ② AI -->
+      <section class="card">
+        <h2><span class="idx">2</span> 本地 AI 摘要</h2>
+
+        <div class="grid">
+          <div class="field">
+            <label for="summaryType">摘要类型</label>
+            <select id="summaryType" name="summaryType">
+              <option value="key-points">要点罗列 key-points</option>
+              <option value="tl;dr">一句话总结 tl;dr</option>
+              <option value="teaser">导语 teaser</option>
+              <option value="headline">标题 headline</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="summaryLength">长度</label>
+            <select id="summaryLength" name="summaryLength">
+              <option value="short">短 short</option>
+              <option value="medium">中 medium</option>
+              <option value="long">长 long</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="outputLanguage">输出语言</label>
+            <select id="outputLanguage" name="outputLanguage">
+              <option value="zh">简体中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="maxInputChars">单次输入上限（字符）</label>
+            <input id="maxInputChars" name="maxInputChars" type="number" min="2000" max="40000" step="1000" />
+          </div>
+        </div>
+
+        <p class="hint">内置 AI 不可用时，降级引擎会用抽取式算法复现这四种类型。<b>输出语言</b>仅对内置 AI 生效 —— 降级摘要是抽取原句，无法翻译，会沿用原文语言。</p>
+
+        <div class="actions">
+          <button type="button" class="primary" id="btnProbe">检测本地模型</button>
+          <span class="status" id="statusAI"></span>
+        </div>
+        <pre class="log" id="aiLog" hidden></pre>
+      </section>
+
+      <!-- ③ 排版 -->
+      <section class="card">
+        <h2><span class="idx">3</span> 消息排版</h2>
+        <div class="checks">
+          <label class="check"><input type="checkbox" name="includeTitle" /> 包含网页标题</label>
+          <label class="check"><input type="checkbox" name="includeUrl" /> 包含原文链接</label>
+          <label class="check"><input type="checkbox" name="includeMeta" /> 包含站点 / 作者 / 字数</label>
+          <label class="check"><input type="checkbox" name="includeFooter" /> 包含引擎与压缩比</label>
+          <label class="check"><input type="checkbox" name="linkPreview" /> 生成网页预览卡片</label>
+          <label class="check"><input type="checkbox" name="notifyOnSuccess" /> 成功时弹系统通知</label>
+          <label class="check"><input type="checkbox" name="notifyOnError" /> 失败时弹系统通知</label>
+        </div>
+      </section>
+
+      <!-- ④ 容灾 -->
+      <section class="card">
+        <h2><span class="idx">4</span> 容灾与降级</h2>
+        <div class="checks">
+          <label class="check"><input type="checkbox" name="enableAI" /> 启用 Chrome 内置 AI</label>
+          <label class="check"><input type="checkbox" name="autoFallback" /> AI 不可用时自动降级为本地启发式摘要</label>
+        </div>
+        <p class="hint">关闭「启用内置 AI」后，插件会使用纯 JS 的 TF 打分抽取式摘要（零模型依赖，秒出结果）。</p>
+      </section>
+
+      <div class="footer-actions">
+        <button type="submit" class="primary big">保存设置</button>
+        <span class="status" id="statusSave"></span>
+      </div>
+    </form>
+
+    <section class="card meta">
+      <h2>使用与排错</h2>
+      <ul>
+        <li><b>快捷键</b>：<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>，可在 <code>chrome://extensions/shortcuts</code> 修改。</li>
+        <li><b>徽标</b>：<span class="badge busy">···</span> 处理中 · <span class="badge ok">✓</span> 成功 · <span class="badge err">ERR</span> 失败（悬停图标看具体原因）。</li>
+        <li><b>模型没就绪</b>：在 <code>chrome://flags/#optimization-guide-on-device-model</code> 选 <i>Enabled BypassPerfRequirement</i>，再在 <code>chrome://components</code> 更新 <i>Optimization Guide On Device Model</i>。需要 Chrome 127+、磁盘 ≥ 22GB。</li>
+        <li><b>发不出消息</b>：90% 是 Bot 没被设为频道管理员，或 CHANNEL_ID 写错。</li>
+      </ul>
+    </section>
+  </div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
