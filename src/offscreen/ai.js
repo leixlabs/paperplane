@@ -15,6 +15,13 @@ import { chunkByParagraph, truncate, normalizeSpace } from '../lib/text.js';
 const MAX_CHUNKS = 6;
 const CHUNK_MIN = 2500;
 
+/**
+ * Chrome 内置 AI 的 outputLanguage 白名单（由 API 报错信息给出）。
+ * 传白名单外的值（zh / ko / ru …）会让整个 create() 请求 abort。
+ * 中文等语言改为「不传该参数」，让模型跟随输入语言输出，效果反而更好。
+ */
+export const SUPPORTED_OUTPUT_LANGS = new Set(['de', 'en', 'es', 'fr', 'ja']);
+
 /** Summarizer type 取值映射：内部 tl;dr → API 的 tldr */
 function apiType(type) {
   switch (type) {
@@ -125,14 +132,26 @@ async function createSummarizer(opt, onProgress) {
     } catch { /* 老版本无 monitor */ }
   };
 
+  // outputLanguage 只接受白名单里的语言码，传别的（比如 zh）会让整个请求 abort：
+  // "Unsupported Summarizer API languages were specified, and the request was aborted"
+  const lang = (opt.language || '').toLowerCase();
+  const canSetLang = SUPPORTED_OUTPUT_LANGS.has(lang);
+  if (opt.language && !canSetLang) {
+    console.warn(
+      `[paperplane] outputLanguage="${opt.language}" 不在 Chrome 内置 AI 支持列表 ` +
+      `[${[...SUPPORTED_OUTPUT_LANGS].join(', ')}] 中，本次不传该参数，由模型跟随输入语言输出。`
+    );
+  }
+
   const rich = {
     type,
     length,
     format,
     sharedContext: opt.context || '',
-    outputLanguage: opt.language || 'zh',
     monitor,
   };
+  if (canSetLang) rich.outputLanguage = lang;
+
   const minimal = { type, length, format, monitor };
 
   const attempt = async (params) => {
@@ -143,8 +162,9 @@ async function createSummarizer(opt, onProgress) {
   try {
     return await withTimeout(attempt(rich), 240000, '创建摘要器');
   } catch (err) {
-    // 参数不被识别（旧 API 不认识 outputLanguage 等）→ 退回最小参数集
-    if (/not a valid|unrecognized|Invalid|outputLanguage|sharedContext/i.test(String(err?.message))) {
+    // 参数不被识别 / 语言不支持（旧 API 不认识 outputLanguage，新 API 拒绝白名单外语言）
+    // → 一律退回最小参数集重试，别让整个 AI 调用废掉
+    if (/not a valid|unrecognized|invalid|unsupported|language/i.test(String(err?.message))) {
       return await withTimeout(attempt(minimal), 240000, '创建摘要器');
     }
     throw err;

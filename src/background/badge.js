@@ -30,30 +30,30 @@ async function paint(text, color, title) {
 /** 处理中：显示三个点，悬停看进度文案 */
 export async function setBusy(title = '正在提取并摘要…') {
   clearReset();
-  await paint('···', COLOR.busy, `Link2Tele · ${title}`);
+  await paint('···', COLOR.busy, `Paperplane · ${title}`);
 }
 
 /** 更新悬停文案但不改徽标（用于模型下载进度） */
 export async function setProgress(title) {
-  await safe(() => chrome.action.setTitle({ title: `Link2Tele · ${title}` }));
+  await safe(() => chrome.action.setTitle({ title: `Paperplane · ${title}` }));
 }
 
 export async function setSuccess(tip = '已发送到 Telegram', { autoClearMs = 6000 } = {}) {
   clearReset();
-  await paint('✓', COLOR.ok, `Link2Tele · ${tip}`);
+  await paint('✓', COLOR.ok, `Paperplane · ${tip}`);
   resetTimer = setTimeout(() => { reset().catch(() => {}); }, autoClearMs);
 }
 
 export async function setError(tip = '发送失败', { autoClearMs = 15000 } = {}) {
   clearReset();
-  await paint('ERR', COLOR.err, `Link2Tele · ${tip}`);
+  await paint('ERR', COLOR.err, `Paperplane · ${tip}`);
   resetTimer = setTimeout(() => { reset().catch(() => {}); }, autoClearMs);
 }
 
 export async function reset() {
   clearReset();
   await safe(() => chrome.action.setBadgeText({ text: '' }));
-  await safe(() => chrome.action.setTitle({ title: '发送到 Telegram（AI 摘要）' }));
+  await safe(() => chrome.action.setTitle({ title: 'Paperplane · 发送到 Telegram（AI 摘要）' }));
 }
 
 export async function notify({ title, message }) {

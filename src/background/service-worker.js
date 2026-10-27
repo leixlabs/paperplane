@@ -59,7 +59,7 @@ async function handleSend(tab) {
       await badge.setError('未配置 Bot Token / 频道');
       if (settings.notifyOnError !== false) {
         await badge.notify({
-          title: 'Link2Tele 尚未配置',
+          title: 'Paperplane 尚未配置',
           message: '请先填写 BOT_TOKEN 与 CHANNEL_ID（已为你打开设置页）。',
         });
       }
@@ -97,7 +97,7 @@ async function handleSend(tab) {
     const msg = String(err?.message || err);
     await badge.setError(msg);
     if (settings?.notifyOnError !== false) {
-      await badge.notify({ title: '✕ Link2Tele 发送失败', message: msg });
+      await badge.notify({ title: '✕ Paperplane 发送失败', message: msg });
     }
   } finally {
     busy = false;
@@ -170,7 +170,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (!isConfigured(settings)) throw new Error('请先填写 BOT_TOKEN 与 CHANNEL_ID 并保存');
       const now = new Date().toLocaleString('zh-CN', { hour12: false });
       const md = [
-        '*' + escapeMdV2('🔔 Link2Tele 连通性测试') + '*',
+        '*' + escapeMdV2('🔔 Paperplane 连通性测试') + '*',
         escapeMdV2(`时间：${now}`),
         '',
         escapeMdV2('如果你看到这条消息，说明 Bot Token、频道权限、网络链路全部正常。'),

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Link2Tele · 一键 AI 摘要推 TG",
-  "version": "1.0.0",
+  "name": "Paperplane · 一键 AI 摘要推 TG",
+  "version": "1.1.0",
   "description": "点击一下图标，用浏览器本地 AI（Gemini Nano）把当前网页提炼成要点，直发 Telegram 频道。零后端、零 API Key。",
   "minimum_chrome_version": "127",
 
@@ -23,7 +23,7 @@
   },
 
   "action": {
-    "default_title": "发送到 Telegram（AI 摘要）",
+    "default_title": "Paperplane · 发送到 Telegram（AI 摘要）",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -50,7 +50,7 @@
         "default": "Alt+Shift+T",
         "mac": "Alt+Shift+T"
       },
-      "description": "把当前网页的 AI 摘要发送到 Telegram"
+      "description": "Paperplane：把当前网页的 AI 摘要发送到 Telegram"
     }
   }
 }

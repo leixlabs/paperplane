@@ -1,4 +1,6 @@
-# Link2Tele · 一键 AI 摘要推 TG
+# Paperplane · 一键 AI 摘要推 TG
+
+仓库：<https://github.com/leixlabs/paperplane>
 
 点一下浏览器工具栏图标 → 当前网页正文用 **Chrome 内置 AI（Gemini Nano）** 在本地提炼成要点 → 直接 `fetch` 到 **Telegram 频道**。
 
@@ -140,6 +142,7 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | 「仅支持 http / https 网页」 | 在 `chrome://`、扩展商店、PDF 阅读器上点了图标 |
 | 「正文过短」 | 不是文章页（首页/列表页），或正文在跨域 iframe 里 |
 | 一直显示 `···` 且模型没反应 | 首次调用在下载模型（1~2GB），看悬停文案的百分比 |
+| 「Unsupported Summarizer API languages」 | 输出语言选了 Chrome 白名单外的（如 `zh`）。插件会自动省略该参数、让模型跟随原文输出；若仍报错，设置页改选 `English` |
 | 模型始终 `unavailable` | `chrome://flags/#optimization-guide-on-device-model` 设 `Enabled BypassPerfRequirement`，再去 `chrome://components` 更新 *Optimization Guide On Device Model*；需 Chrome 127+、磁盘 ≥22GB、显存 ≥4GB |
 
 自检：设置页 →「检测本地模型」，会打印 Chrome 版本、API 代次、可用性。

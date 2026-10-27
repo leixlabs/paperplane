@@ -195,4 +195,55 @@ const a = 1 * 2;
   ok('摘要类型与长度配置在降级引擎上生效');
 }
 
+/* ── 9. outputLanguage 白名单（Chrome 内置 AI） ────────── */
+{
+  const base = {
+    summaryType: 'key-points', summaryLength: 'medium', summaryFormat: 'markdown',
+    maxInputChars: 12000, mapReduceThreshold: 9000,
+  };
+  const text = '这是一段足够长的中文正文，用来触发一次真实的摘要调用。'.repeat(30);
+
+  const calls = [];
+  const stubApi = (onCreate) => {
+    globalThis.Summarizer = {
+      availability: async () => 'available',
+      create: async (opts) => {
+        calls.push(opts);
+        return onCreate(opts);
+      },
+    };
+  };
+  const okSession = () => ({ summarize: async () => '• 要点一\n• 要点二', destroy() {} });
+
+  const ai = await import('../src/offscreen/ai.js');
+
+  // zh 不在白名单 → 绝不能传 outputLanguage，否则请求直接 abort
+  calls.length = 0;
+  stubApi(async () => okSession());
+  await ai.summarizeWithNano(text, { ...base, outputLanguage: 'zh' }, { title: '标题' });
+  assert.equal(calls[0].outputLanguage, undefined, 'zh 不应出现在参数里');
+  assert.ok(calls[0].sharedContext.includes('简体中文'), 'zh 应改用 sharedContext 提示');
+
+  // en 在白名单 → 正常传
+  calls.length = 0;
+  await ai.summarizeWithNano(text, { ...base, outputLanguage: 'en' }, { title: '标题' });
+  assert.equal(calls[0].outputLanguage, 'en', 'en 应正常传递');
+
+  // 严格校验拒绝 outputLanguage → 应自动去掉参数重试，而不是整个失败
+  calls.length = 0;
+  stubApi(async (opts) => {
+    if (opts.outputLanguage) {
+      throw new Error('Unsupported Summarizer API languages were specified, and the request was aborted.');
+    }
+    return okSession();
+  });
+  const res = await ai.summarizeWithNano(text, { ...base, outputLanguage: 'en' }, { title: '标题' });
+  assert.equal(calls.length, 2, '应在去掉 outputLanguage 后重试一次');
+  assert.equal(calls[1].outputLanguage, undefined, '重试时不应再带 outputLanguage');
+  assert.ok(res.summary.includes('要点'), '重试后应拿到摘要');
+
+  delete globalThis.Summarizer;
+  ok('outputLanguage 白名单 + 语言报错自动重试');
+}
+
 console.log(`\n全部通过：${pass} 组断言\n`);

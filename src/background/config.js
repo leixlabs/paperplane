@@ -51,6 +51,8 @@ export const DEFAULTS = {
   autoFallback: true,          // AI 不可用时自动降级而非直接报错
 };
 
+// 注意：这里沿用旧名字，不要改成 paperplane。
+// 改名会让已经装好插件的用户丢失已保存的 Token 与频道配置。
 const STORAGE_KEY = 'link2tele.settings';
 
 export async function loadSettings() {
