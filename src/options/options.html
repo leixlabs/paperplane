@@ -124,6 +124,30 @@
         <p class="hint">关闭「启用内置 AI」后，插件会使用纯 JS 的 TF 打分抽取式摘要（零模型依赖，秒出结果）。</p>
       </section>
 
+      <!-- ⑤ 过滤剔重 -->
+      <section class="card">
+        <h2><span class="idx">5</span> 过滤与去重</h2>
+        <div class="checks">
+          <label class="check"><input type="checkbox" name="skipDuplicates" /> 开启本地去重：发过的地址直接跳过</label>
+        </div>
+        <div class="field narrow">
+          <label for="dedupeKeepDays">去重有效期（天）</label>
+          <input id="dedupeKeepDays" name="dedupeKeepDays" type="number" min="0" max="3650" step="1" />
+          <p class="hint"><code>0</code> = 永久记住；<code>7</code> = 只拦截 7 天内发过的地址，更久之前发过的允许再发一次。</p>
+        </div>
+        <p class="hint">
+          历史存在浏览器本地的 IndexedDB（库名 <code>paperplane-history</code>），不联网、不上传。<br>
+          比对前会先归一化地址：忽略 <code>#锚点</code>、<code>utm_*</code>、<code>fbclid</code>、<code>spm</code> 等跟踪参数，
+          去掉 <code>www.</code> 与末尾斜杠，所以同一篇文章不同分享链接会被认成同一个。<br>
+          开关关闭时仍会照常记录（方便以后打开），只有打开时才会拦截。
+        </p>
+        <div class="actions">
+          <span class="status" id="historyStats">正在读取本地历史…</span>
+          <button type="button" class="ghost" id="btnClearHistory">清空历史</button>
+          <span class="status" id="statusHistory"></span>
+        </div>
+      </section>
+
       <div class="footer-actions">
         <button type="submit" class="primary big">保存设置</button>
         <span class="status" id="statusSave"></span>
@@ -134,7 +158,7 @@
       <h2>使用与排错</h2>
       <ul>
         <li><b>快捷键</b>：<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>，可在 <code>chrome://extensions/shortcuts</code> 修改。</li>
-        <li><b>徽标</b>：<span class="badge busy">···</span> 处理中 · <span class="badge ok">✓</span> 成功 · <span class="badge err">ERR</span> 失败（悬停图标看具体原因）。</li>
+        <li><b>徽标</b>：<span class="badge busy">···</span> 处理中 · <span class="badge ok">✓</span> 成功 · <span class="badge skip">SKIP</span> 已发过被去重跳过 · <span class="badge err">ERR</span> 失败（悬停图标看具体原因）。</li>
         <li><b>模型没就绪</b>：在 <code>chrome://flags/#optimization-guide-on-device-model</code> 选 <i>Enabled BypassPerfRequirement</i>，再在 <code>chrome://components</code> 更新 <i>Optimization Guide On Device Model</i>。需要 Chrome 127+、磁盘 ≥ 22GB。</li>
         <li><b>发不出消息</b>：90% 是 Bot 没被设为频道管理员，或 CHANNEL_ID 写错。</li>
       </ul>

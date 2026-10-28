@@ -1,4 +1,5 @@
 import { loadSettings, saveSettings } from '../background/config.js';
+import { stats as historyStats, clearAll as clearHistory } from '../background/history.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('form');
@@ -8,6 +9,7 @@ const NUM_FIELDS = ['maxInputChars'];
 const BOOL_FIELDS = [
   'includeTitle', 'includeUrl', 'includeMeta', 'includeFooter',
   'linkPreview', 'notifyOnSuccess', 'notifyOnError', 'enableAI', 'autoFallback',
+  'skipDuplicates',
 ];
 
 function setStatus(el, text, kind = '') {
@@ -19,6 +21,7 @@ function fillForm(s) {
   for (const k of TEXT_FIELDS) if (form.elements[k]) form.elements[k].value = s[k] ?? '';
   for (const k of NUM_FIELDS) if (form.elements[k]) form.elements[k].value = s[k] ?? '';
   for (const k of BOOL_FIELDS) if (form.elements[k]) form.elements[k].checked = Boolean(s[k]);
+  if (form.elements.dedupeKeepDays) form.elements.dedupeKeepDays.value = s.dedupeKeepDays ?? 0;
 }
 
 function collect() {
@@ -32,6 +35,10 @@ function collect() {
     patch[k] = Number.isFinite(n) && n > 0 ? n : 12000;
   }
   for (const k of BOOL_FIELDS) patch[k] = Boolean(form.elements[k]?.checked);
+
+  // 去重有效期允许为 0（永久），不能走上面「必须 > 0」的兜底
+  const days = Number(form.elements.dedupeKeepDays?.value);
+  patch.dedupeKeepDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 0;
   return patch;
 }
 
@@ -163,3 +170,46 @@ function syncFallbackState() {
 }
 form.elements.enableAI?.addEventListener('change', syncFallbackState);
 syncFallbackState();
+
+/* ── 本地去重历史 ── */
+function fmtTime(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+}
+
+async function refreshHistory() {
+  const el = $('historyStats');
+  if (!el) return;
+  try {
+    const s = await historyStats();
+    if (!s.supported) {
+      el.textContent = '当前环境不支持 IndexedDB，去重不可用';
+      return;
+    }
+    el.textContent = s.count
+      ? `已记录 ${s.count} 个地址${s.lastSentAt ? ' · 最近一次 ' + fmtTime(s.lastSentAt) : ''}`
+      : '暂无记录（成功发送后才会写入）';
+  } catch (err) {
+    el.textContent = '读取历史失败：' + err.message;
+  }
+}
+
+$('btnClearHistory')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const el = $('statusHistory');
+  if (!confirm('清空后，之前发过的地址会被重新视为「未发送」。确定清空？')) return;
+  busy(btn, true, '清空中…');
+  try {
+    const ok = await clearHistory();
+    if (!ok) throw new Error('写入被拒绝');
+    setStatus(el, '✓ 已清空', 'ok');
+    setTimeout(() => setStatus(el, ''), 2500);
+    await refreshHistory();
+  } catch (err) {
+    setStatus(el, '✕ ' + err.message, 'err');
+  } finally {
+    busy(btn, false);
+  }
+});
+
+refreshHistory();

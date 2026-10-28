@@ -4,7 +4,7 @@
 
 点一下浏览器工具栏图标 → 当前网页正文用 **Chrome 内置 AI（Gemini Nano）** 在本地提炼成要点 → 直接 `fetch` 到 **Telegram 频道**。
 
-零后端、零数据库、零第三方 API Key。整条链路只有两个参与者：你的浏览器，和 `api.telegram.org`。
+零后端、零第三方 API Key。整条链路只有两个参与者：你的浏览器，和 `api.telegram.org`。唯一的本地存储是去重用的 IndexedDB（`paperplane-history`），只记「哪些地址发过」，不联网。
 
 ---
 
@@ -34,7 +34,11 @@ Telegram 里找 `@BotFather` → `/newbot` → 拿到 `123456789:AAH...` 形式�
 
 **5. 用**
 
-点图标。徽标 `···` → `✓` / `ERR`，悬停看具体原因。快捷键 `Alt+Shift+T` 可在 `chrome://extensions/shortcuts` 改。
+点图标。徽标 `···` → `✓` / `SKIP` / `ERR`，悬停看具体原因。快捷键 `Alt+Shift+T` 可在 `chrome://extensions/shortcuts` 改。
+
+**6. 可选：开启去重**
+
+设置页第 5 节「过滤与去重」→ 勾上「开启本地去重」。之后点开一个已经发过的地址，徽标会变成灰色 `SKIP`、悬停显示上次发送时间，且不会产生任何网络请求（连正文提取和 AI 推理都跳过）。「去重有效期」填 `0` 表示永久记住，填 `7` 表示只拦截 7 天内发过的地址。旁边能看到已记录多少条，也能一键清空。
 
 ---
 
@@ -44,6 +48,7 @@ Telegram 里找 `@BotFather` → `/newbot` → 拿到 `123456789:AAH...` 形式�
                         ┌──────────────────────────────────────────┐
    点击图标 / 快捷键 ──► │ Service Worker（编排层，无 DOM）          │
                         │  ① chrome.tabs 取 url/title              │
+                        │  ①.5 查本地历史（IndexedDB，可选）────────┼──► 命中即跳过
                         │  ② chrome.scripting 注入提取器            │
                         └───────────────┬──────────────────────────┘
                                         │ chrome.runtime.sendMessage
@@ -84,9 +89,10 @@ icons/                         图标（tools/gen_icons.py 零依赖生成）
 src/
 ├─ background/
 │  ├─ service-worker.js        事件编排：点击 → 守卫 → 流水线 → 徽标反馈
-│  ├─ pipeline.js              编排：提取 → 摘要 → 排版 → 发送（与 chrome.* 解耦）
+│  ├─ pipeline.js              编排：去重 → 提取 → 摘要 → 排版 → 发送（与 chrome.* 解耦）
 │  ├─ ai-bridge.js             SW ↔ offscreen；超时控制；AI 失败自动降级
 │  ├─ telegram.js              Bot API 客户端：429 重试 / 错误码映射 / Markdown 降级
+│  ├─ history.js               本地发送历史（IndexedDB），去重查询与写入
 │  ├─ badge.js                 徽标 + 系统通知
 │  └─ config.js                硬编码默认值 + storage 覆盖
 ├─ content/
@@ -96,11 +102,12 @@ src/
 │  └─ ai.js                    Gemini Nano 调用 + map-reduce 长文摘要
 ├─ lib/
 │  ├─ text.js                  分句 / 词频 / 分块
+│  ├─ url.js                   URL 归一化（去重指纹）
 │  ├─ heuristic.js             纯 JS 抽取式摘要（降级引擎）
 │  └─ markdown.js              Markdown → MarkdownV2 + 4096 分片
 └─ options/                    配置页（原生 HTML/CSS，无框架）
 
-tests/                         node 测试：纯逻辑 / DOM 提取 / 端到端接线
+tests/                         node 测试：纯逻辑 / 去重 / DOM 提取 / 端到端接线
 tools/gen_icons.py             零依赖 PNG 图标生成
 ```
 
@@ -128,6 +135,7 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | MarkdownV2 解析失败 | 去掉 `parse_mode` 重发纯文本，宁可丢格式不丢内容 |
 | 429 限流 | 按 `retry_after` 等待后重试一次 |
 | 消息超长 | 按行分片，首片带预览卡片 |
+| 该地址已发送过（开启了去重） | 灰色 `SKIP` 徽标，悬停显示上次发送时间与次数，不发送 |
 
 **7. Session 复用：模型只加载一次。** Gemini Nano 的权重只在**首次**真正下载；但 `Summarizer.create()` 每次都会把约 2GB 权重重新载入内存并重建执行流水线（冷启动），短则数秒、长则几十秒 —— 体感就是「换个网页又下载了一遍」。官方也说了 Summarizer 不像 Prompt API 那样保留上下文，**本来就是设计来跨任务复用的**。
 
@@ -144,6 +152,16 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 
 **9. 硬编码 Token 的取舍。** 自家插件写死 token 免了整条后端链路，但要知道：token 明文存在扩展目录里，能被同机进程读到；`chrome.storage.local` 同样是明文。别把带这个 token 的 crx 传给别人。
 
+**10. 去重用 IndexedDB，不用 `chrome.storage.local`。** 过滤剔重需要一张「已发地址」表：开启后，地址发过就直接跳过，连正文提取和 AI 推理都不做（省的是最贵的那几步）。
+
+- 存储选型：`storage.local` 是整块 KV，每写一条都要把全表读出来再写回去，几千条就明显卡；IndexedDB 有主键与索引，`get(key)` 是 O(log n)，且 SW 与设置页同源共享同一个库（`paperplane-history`）。
+- 比对前先归一化（`src/lib/url.js`）：去掉 `#锚点`、`utm_*`/`fbclid`/`spm` 等跟踪参数、`www.` 前缀、协议默认端口与末尾斜杠，剩下的查询参数按键排序。所以「同一篇文章的不同分享链接」会命中同一条记录，而 `?p=2` 这类业务参数必须保留（否则分页会被误判成同一页）。
+- **宁可漏判，不可错杀**：只剔除明确无意义的参数；归一化只影响比对用的 key，实际发出去的仍是原始 URL。
+- 只在**发送成功之后**写历史。失败、429 重试、Markdown 降级都不会留下「已发」假记录。
+- 开关关闭时也照常记录，打开开关立刻就有底数，不需要「先跑一周攒数据」。
+- 数据库是缓存性质，坏了不能挡住主流程：读失败按「没发过」处理，写失败只 `console.warn`，环境不支持 IndexedDB 时整体退化为「不去重」。
+- 命中重复抛 `DuplicateError`（带 `duplicate: true`），编排层据此把徽标打成灰色 `SKIP` 而不是红色 `ERR` —— 这是按配置正常工作，不该触发错误通知。
+
 ---
 
 ## 排错
@@ -158,6 +176,9 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | 摘要里混进「本地网络访问权限」「查找并连接设备」 | 视频页（B 站等）没有正文，抓到了播放器遮罩。已改为走 meta 简介；若仍出现说明该站未被识别为视频页，检查 `og:type` |
 | 「这是视频页，但没有可摘要的标题/简介」 | 该视频没有简介，视频本体无法离线提取，属预期行为 |
 | 「Unsupported Summarizer API languages」 | 输出语言选了 Chrome 白名单外的（如 `zh`）。插件会自动省略该参数、让模型跟随原文输出；若仍报错，设置页改选 `English` |
+| 徽标 `SKIP`，什么都没发 | 开了本地去重且该地址发过。设置页「过滤与去重」可关闭，或「清空历史」后重发 |
+| 换了个页面也被判成重复 | 归一化只抹掉跟踪参数与斜杠；若确实是不同内容但 URL 壳相同（如详情页靠 `#` 路由），请把去重有效期调小或关闭 |
+| 去重历史读不出来 | 设置页会直接提示「当前环境不支持 IndexedDB」。此时插件退化为不去重，发送功能不受影响 |
 | 模型始终 `unavailable` | `chrome://flags/#optimization-guide-on-device-model` 设 `Enabled BypassPerfRequirement`，再去 `chrome://components` 更新 *Optimization Guide On Device Model*；需 Chrome 127+、磁盘 ≥22GB、显存 ≥4GB |
 
 自检：设置页 →「检测本地模型」，会打印 Chrome 版本、API 代次、可用性。
@@ -168,16 +189,20 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 
 ```bash
 node tests/smoke.mjs     # 转义 / 排版 / 4096 分片 / 降级摘要
+node tests/dedupe.mjs    # URL 归一化 / IndexedDB 历史读写 / 命中重复是否提前中止
 node tests/extract.mjs   # 需 jsdom：真实 DOM 上验证正文命中与噪音剔除
 node tests/wiring.mjs    # chrome 桩 + 假网页，跑完整点击链路并校验请求体
 ```
 
-`wiring.mjs` 会打印实际发往 Telegram 的 JSON，改排版逻辑后拿它当快照看最直观。
+`node tests/dedupe.mjs` 会在 node 里装一个极简的假 IndexedDB（`tests/fake-idb.mjs`），所以去重逻辑不用开浏览器就能验：写入 → 换个写法的同一地址命中 → 超期放行 → 清空后重发 → 环境不支持时降级。
+
+`wiring.mjs` 会打印实际发往 Telegram 的 JSON，改排版逻辑后拿它当快照看最直观；它同时覆盖「开启去重后第二次点同一页零请求、徽标转 SKIP」。
 
 ---
 
 ## 隐私
 
 - 网页正文只在本机内存里存在，唯一的出境数据是最终摘要 + 标题 + 链接。
+- 去重历史（归一化地址、网页标题、频道、时间戳）只写在浏览器本地 IndexedDB，不上传；设置页可一键清空。
 - 不发任何遥测，不引第三方 CDN，无远程脚本。CSP 保持 MV3 默认。
 - 唯一的外部请求：`POST https://api.telegram.org/bot<TOKEN>/sendMessage`。

@@ -7,8 +7,13 @@
  *  - 内置 AI 不可用时是否自动降级到启发式（真实场景：模型未下载）
  *  - 请求体：chat_id 归一化、parse_mode、MarkdownV2 实体、链接预览开关
  *  - 错误映射：403 权限不足给出可操作提示
+ *  - 去重：开启后发过的地址不再产生请求，徽标转为 SKIP
  */
 import assert from 'node:assert/strict';
+import { installFakeIndexedDB } from './fake-idb.mjs';
+
+// node 没有 IndexedDB，去重历史得靠这个桩；必须在 import 业务模块前装好
+installFakeIndexedDB();
 
 /* ── chrome API 桩 ─────────────────────────────────────── */
 const captured = { onClicked: [], onMessage: [], onCommand: [], onInstalled: [], onStartup: [] };
@@ -197,6 +202,32 @@ const tip = badge.titles.slice(-1)[0];
 console.log('  403 提示:', tip);
 assert.match(tip, /管理员/, '403 应提示把 Bot 设为管理员');
 console.log('  ✓ 403 权限错误映射为可操作提示');
+
+/* ── 去重：发过的地址直接跳过 ──────────────────────────── */
+requests.length = 0;
+badge.texts.length = 0;
+badge.titles.length = 0;
+nextResponse = null; // 恢复 200
+stored = { ...mockSettings, skipDuplicates: true, dedupeKeepDays: 0 };
+
+// 第一次点击时发过的地址，这次应被本地历史拦下
+captured.onClicked[0]({ id: 9, url: 'https://blog.example.com/chrome-builtin-ai', title: 'x' });
+const skipped = await waitFor(() => badge.texts.includes('SKIP') || badge.texts.includes('ERR'));
+assert.ok(skipped, '去重命中应有明确反馈，实测徽标：' + badge.texts.join(' → '));
+assert.equal(badge.texts.includes('ERR'), false, '去重是预期行为，不该打 ERR');
+assert.equal(badge.texts.includes('✓'), false, '不该出现成功徽标');
+assert.equal(requests.length, 0, '命中重复不应再发请求，实际发了 ' + requests.length + ' 条');
+assert.match(badge.titles.slice(-1)[0], /已经发过/, '悬停文案应说明已发过：' + badge.titles.slice(-1)[0]);
+console.log('  SKIP 提示:', badge.titles.slice(-1)[0]);
+console.log('  ✓ 去重命中：零请求，徽标 SKIP');
+
+// 换个没发过的地址 → 照常发送
+badge.texts.length = 0;
+captured.onClicked[0]({ id: 10, url: 'https://blog.example.com/another-post', title: 'y' });
+const sentNew = await waitFor(() => badge.texts.includes('✓') || badge.texts.includes('ERR'));
+assert.ok(sentNew && badge.texts.includes('✓'), '新地址应正常发送');
+assert.equal(requests.length, 1, '新地址应产生 1 条请求');
+console.log('  ✓ 去重开着时，新地址照常发送');
 
 /* ── 未配置时自动打开设置页 ───────────────────────────── */
 stored = { ...mockSettings, botToken: '', channelId: '' };

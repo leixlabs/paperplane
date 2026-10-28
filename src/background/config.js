@@ -45,6 +45,10 @@ export const DEFAULTS = {
   linkPreview: true,           // Telegram 网页预览卡片
   parseMode: 'MarkdownV2',
 
+  // ── 过滤剔重 ──
+  skipDuplicates: false,       // 开启后，发过的地址直接跳过不再发送
+  dedupeKeepDays: 0,           // 去重有效期（天）；0 = 永久记住
+
   // ── 反馈 ──
   notifyOnSuccess: false,
   notifyOnError: true,

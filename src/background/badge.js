@@ -5,6 +5,7 @@ const COLOR = {
   busy: '#5B8DEF',
   ok: '#22C55E',
   err: '#EF4444',
+  skip: '#64748B',
 };
 
 let resetTimer = null;
@@ -47,6 +48,13 @@ export async function setSuccess(tip = '已发送到 Telegram', { autoClearMs = 
 export async function setError(tip = '发送失败', { autoClearMs = 15000 } = {}) {
   clearReset();
   await paint('ERR', COLOR.err, `Paperplane · ${tip}`);
+  resetTimer = setTimeout(() => { reset().catch(() => {}); }, autoClearMs);
+}
+
+/** 去重命中：不是错误，用中性灰 + SKIP 区分，悬停看是哪天发过的 */
+export async function setSkipped(tip = '该地址已发送过，已跳过', { autoClearMs = 6000 } = {}) {
+  clearReset();
+  await paint('SKIP', COLOR.skip, `Paperplane · ${tip}`);
   resetTimer = setTimeout(() => { reset().catch(() => {}); }, autoClearMs);
 }
 

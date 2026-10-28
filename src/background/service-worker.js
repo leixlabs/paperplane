@@ -98,6 +98,13 @@ async function handleSend(tab) {
     }
   } catch (err) {
     const msg = String(err?.message || err);
+
+    // 去重命中属于「按配置正常工作」，不是失败：灰色 SKIP，不弹错误通知
+    if (err?.duplicate) {
+      await badge.setSkipped(msg);
+      return;
+    }
+
     await badge.setError(msg);
     if (settings?.notifyOnError !== false) {
       await badge.notify({ title: '✕ Paperplane 发送失败', message: msg });
