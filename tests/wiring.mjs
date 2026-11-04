@@ -1,5 +1,5 @@
 /**
- * 接线测试：用 chrome API 桩 + 假网页，跑完整个「点击图标 → 提取 → 摘要 → 发送」链路。
+ * 接线测试：用 chrome API 桩 + 假网页，跑完整个「点击图标 → 入队 → 提取 → 摘要 → 发送」链路。
  *
  * 覆盖：
  *  - Service Worker 事件监听是否正常注册
@@ -8,6 +8,7 @@
  *  - 请求体：chat_id 归一化、parse_mode、MarkdownV2 实体、链接预览开关
  *  - 错误映射：403 权限不足给出可操作提示
  *  - 去重：开启后发过的地址不再产生请求，徽标转为 SKIP
+ *  - 队列：连点多个标签页按点击顺序发完，一条不丢
  */
 import assert from 'node:assert/strict';
 import { installFakeIndexedDB } from './fake-idb.mjs';
@@ -18,6 +19,8 @@ installFakeIndexedDB();
 /* ── chrome API 桩 ─────────────────────────────────────── */
 const captured = { onClicked: [], onMessage: [], onCommand: [], onInstalled: [], onStartup: [] };
 const badge = { texts: [], titles: [] };
+/** 按 tabId 返回不同的假页面，用来验证队列顺序 */
+const pageByTab = new Map();
 let stored = {};
 
 const mockSettings = {
@@ -89,7 +92,9 @@ globalThis.chrome = {
   offscreen: { createDocument: async () => {}, Reason: { DOM_PARSER: 'DOM_PARSER' } },
   notifications: { create: async () => {} },
   scripting: {
-    executeScript: async (opts) => (opts.files ? [{}] : [{ result: fakePage }]),
+    executeScript: async (opts) => (
+      opts.files ? [{}] : [{ result: pageByTab.get(opts.target.tabId) || fakePage }]
+    ),
   },
   tabs: { query: async () => [] },
 };
@@ -228,6 +233,43 @@ const sentNew = await waitFor(() => badge.texts.includes('✓') || badge.texts.i
 assert.ok(sentNew && badge.texts.includes('✓'), '新地址应正常发送');
 assert.equal(requests.length, 1, '新地址应产生 1 条请求');
 console.log('  ✓ 去重开着时，新地址照常发送');
+
+/* ── 队列：连点三篇，按点击顺序依次发送 ────────────────── */
+requests.length = 0;
+badge.texts.length = 0;
+nextResponse = null;
+stored = mockSettings;
+
+const tabs = [
+  { id: 11, url: 'https://blog.example.com/q1', title: '排队第一篇' },
+  { id: 12, url: 'https://blog.example.com/q2', title: '排队第二篇' },
+  { id: 13, url: 'https://blog.example.com/q3', title: '排队第三篇' },
+];
+for (const t of tabs) pageByTab.set(t.id, { ...fakePage, url: t.url, title: t.title });
+
+// 三下连点，不等待：全部应当被收进队列而不是被丢弃
+for (const t of tabs) captured.onClicked[0]({ ...t });
+
+const drained = await waitFor(
+  () => requests.length === 3 && badge.texts.includes('✓'),
+  10000
+);
+assert.ok(
+  drained,
+  `三篇应全部发出，实际 ${requests.length} 条请求，徽标：${badge.texts.join(' → ')}`
+);
+assert.equal(requests.length, 3, '三篇应各发一条消息');
+assert.ok(
+  badge.texts.some((t) => t === '1/3'),
+  '多篇排队时徽标应显示进度：' + badge.texts.join(' → ')
+);
+assert.equal(badge.texts.includes('ERR'), false, '队列里不应出现失败徽标');
+
+const sentOrder = requests.map((r) => (/(q[1-3])/.exec(r.body.text) || [])[1]);
+assert.deepEqual(sentOrder, ['q1', 'q2', 'q3'], '应按点击顺序发送');
+assert.match(badge.titles.slice(-1)[0], /已发送 3 篇/, '结束时应给出这一批的总账');
+console.log('  徽标序列:', badge.texts.join(' → '));
+console.log('  ✓ 连点排队：3 篇按点击顺序发完，未被丢弃');
 
 /* ── 未配置时自动打开设置页 ───────────────────────────── */
 stored = { ...mockSettings, botToken: '', channelId: '' };

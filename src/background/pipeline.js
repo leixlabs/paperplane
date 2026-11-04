@@ -1,5 +1,5 @@
 /**
- * 流水线编排：数据采集 → 去重 → AI 摘要 → 排版 → 传输
+ * 流水线编排：去重 → 数据采集 → AI 摘要 → 排版 → 传输
  * 与 chrome.* 事件解耦，方便单元测试与复用。
  */
 import { buildMessage } from '../lib/markdown.js';
@@ -47,7 +47,7 @@ export function assertSendable(tab) {
 }
 
 /**
- * 采集层 —— 注入提取器，取回正文
+ * 第 2~3 步：采集层 —— 注入提取器，取回正文
  */
 export async function extractPage(tabId) {
   await chrome.scripting.executeScript({
@@ -83,6 +83,20 @@ export async function extractPage(tabId) {
 }
 
 /**
+ * 采集层入口：点击瞬间就把正文抓下来。
+ *
+ * 之所以在「入队时」而不是「轮到这个任务时」抓取：
+ *  1. activeTab 授权是随点击授予的，用户一旦离开该页就失效；
+ *  2. 排队期间页面可能被关闭、刷新或跳转，那时抓到的已经不是用户点的那篇；
+ *  3. 抓取本身很快（注入一次脚本），真正的耗时在后面的 AI 摘要。
+ * 抓完即把正文快照留在内存里，排队多久都不影响内容。
+ */
+export async function capturePage(tab) {
+  assertSendable(tab);
+  return extractPage(tab.id);
+}
+
+/**
  * 去重检查：只读本地数据库，不发任何网络请求。
  * 用 tab.url（用户眼前的地址）而不是提取后的 page.url —— 位置在提取之前，
  * 重复页可以直接省掉整条「提取 + AI 推理 + 上传」。
@@ -96,29 +110,34 @@ export async function checkDuplicate(url, settings) {
 
 /**
  * 完整流水线
- * @param {{tab:object, settings:object, onProgress?:(p:object)=>void}} args
+ * @param {{page?:object, tab?:object, url?:string, settings:object, onProgress?:(p:object)=>void}} args
+ *   page 已由 capturePage() 抓好的正文快照；缺省时回退到现场从 tab 抓取。
+ *   url 是点击那一刻的地址，排队模式下 tab 可能早已关掉，靠它做去重。
  */
-export async function runPipeline({ tab, settings, onProgress }) {
+export async function runPipeline({ page, tab, url, settings, onProgress }) {
   const t0 = Date.now();
-  assertSendable(tab);
+  const targetUrl = url || tab?.url || page?.url || '';
 
   // ① 去重：命中就直接中止，省掉后面所有开销
-  const hit = await checkDuplicate(tab.url, settings);
+  const hit = await checkDuplicate(targetUrl, settings);
   if (hit) throw new DuplicateError(hit);
 
-  onProgress?.({ stage: 'extract', message: '正在提取网页正文…' });
-  const page = await extractPage(tab.id);
+  let snapshot = page;
+  if (!snapshot) {
+    onProgress?.({ stage: 'extract', message: '正在提取网页正文…' });
+    snapshot = await capturePage(tab);
+  }
 
   onProgress?.({ stage: 'summarize', message: '本地 AI 正在生成摘要…' });
-  const result = await summarizePage({ page, settings, onProgress });
+  const result = await summarizePage({ page: snapshot, settings, onProgress });
 
   onProgress?.({ stage: 'format', message: '正在排版消息…' });
   const markdown = buildMessage({
-    title: page.title,
-    url: page.url,
-    siteName: page.siteName,
-    author: page.author,
-    charCount: page.charCount,
+    title: snapshot.title,
+    url: snapshot.url,
+    siteName: snapshot.siteName,
+    author: snapshot.author,
+    charCount: snapshot.charCount,
     summary: result.summary,
     engine: result.engine,
     degraded: result.degraded,
@@ -136,23 +155,23 @@ export async function runPipeline({ tab, settings, onProgress }) {
 
   // ② 只有真的发出去了才写历史。开关关着也照记 —— 以后打开去重立刻有底数。
   const recorded = await recordSent({
-    url: page.url || tab.url,
-    title: page.title,
+    url: snapshot.url || targetUrl,
+    title: snapshot.title,
     chatId: settings.channelId,
     messageId: sent.messageIds?.[0] ?? null,
   });
 
   return {
     ok: true,
-    title: page.title,
-    url: page.url,
+    title: snapshot.title,
+    url: snapshot.url,
     parts: sent.parts,
     engine: result.engine,
     degraded: Boolean(result.degraded),
     reason: result.reason || '',
-    charCount: page.charCount,
+    charCount: snapshot.charCount,
     summaryLen: stripMarkdown(result.summary).length,
-    extractedFrom: page.extractedFrom,
+    extractedFrom: snapshot.extractedFrom,
     recorded,
     ms: Date.now() - t0,
   };

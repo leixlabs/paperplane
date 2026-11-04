@@ -4,6 +4,8 @@
 
 点一下浏览器工具栏图标 → 当前网页正文用 **Chrome 内置 AI（Gemini Nano）** 在本地提炼成要点 → 直接 `fetch` 到 **Telegram 频道**。
 
+连点不丢：每次点击都是一个独立任务，按点击顺序**排队**执行，上一篇还在摘要时你可以继续点别的标签页。
+
 零后端、零第三方 API Key。整条链路只有两个参与者：你的浏览器，和 `api.telegram.org`。唯一的本地存储是去重用的 IndexedDB（`paperplane-history`），只记「哪些地址发过」，不联网。
 
 ---
@@ -36,6 +38,18 @@ Telegram 里找 `@BotFather` → `/newbot` → 拿到 `123456789:AAH...` 形式�
 
 点图标。徽标 `···` → `✓` / `SKIP` / `ERR`，悬停看具体原因。快捷键 `Alt+Shift+T` 可在 `chrome://extensions/shortcuts` 改。
 
+想连着发好几篇，就一个一个点过去 —— 别再等上一篇发完：
+
+| 场景 | 徽标 | 悬停文案 |
+|---|---|---|
+| 只点一下 | `···` | 当前阶段（提取 / 摘要 / 推送） |
+| 队列里有多篇 | `1/3` | 第 1/3 篇 · 正在生成摘要… |
+| 全部成功 | `✓` | 已发送 3 篇到 @频道 |
+| 部分失败 | `2/3`（红） | 2 篇成功 / 1 篇失败：原因 |
+| 点了同一个页面两次 | 不变 | 该页面已在队列中：标题 |
+
+正文在你**点击的瞬间**就被抓下来了，排队期间翻页、关标签都不影响这一篇的内容。
+
 **6. 可选：开启去重**
 
 设置页第 5 节「过滤与去重」→ 勾上「开启本地去重」。之后点开一个已经发过的地址，徽标会变成灰色 `SKIP`、悬停显示上次发送时间，且不会产生任何网络请求（连正文提取和 AI 推理都跳过）。「去重有效期」填 `0` 表示永久记住，填 `7` 表示只拦截 7 天内发过的地址。旁边能看到已记录多少条，也能一键清空。
@@ -47,14 +61,16 @@ Telegram 里找 `@BotFather` → `/newbot` → 拿到 `123456789:AAH...` 形式�
 ```
                         ┌──────────────────────────────────────────┐
    点击图标 / 快捷键 ──► │ Service Worker（编排层，无 DOM）          │
-                        │  ① chrome.tabs 取 url/title              │
-                        │  ①.5 查本地历史（IndexedDB，可选）────────┼──► 命中即跳过
-                        │  ② chrome.scripting 注入提取器            │
+                        │  ① 任务入队（FIFO，一次只跑一个）          │
+                        │  ② chrome.scripting 注入提取器，立刻抓正文 │
+                        │     └─ 抓完即存快照，之后翻页也不影响      │
+                        │  ③ 轮到它时查本地历史（可选）─────────────┼──► 命中即跳过
+                        │  ④ 摘要 + 排版 + 发送                      │
                         └───────────────┬──────────────────────────┘
                                         │ chrome.runtime.sendMessage
                         ┌───────────────▼──────────────────────────┐
                         │ offscreen document（有 window 的隐藏页）  │
-                        │  ③ Summarizer / window.ai.summarizer     │
+                        │  ④ Summarizer / window.ai.summarizer     │
                         │     Gemini Nano 本地推理，数据不出设备     │
                         └───────────────┬──────────────────────────┘
                                         │ 摘要文本
@@ -88,8 +104,9 @@ icons/                         图标（tools/gen_icons.py 零依赖生成）
 
 src/
 ├─ background/
-│  ├─ service-worker.js        事件编排：点击 → 守卫 → 流水线 → 徽标反馈
-│  ├─ pipeline.js              编排：去重 → 提取 → 摘要 → 排版 → 发送（与 chrome.* 解耦）
+│  ├─ service-worker.js        事件编排：点击 → 入队 → 队列消费 → 批量反馈
+│  ├─ queue.js                 串行 FIFO 队列：连点不丢、重复 URL 不重发
+│  ├─ pipeline.js              编排：去重 → 摘要 → 排版 → 发送（capturePage 负责点击瞬间抓正文）
 │  ├─ ai-bridge.js             SW ↔ offscreen；超时控制；AI 失败自动降级
 │  ├─ telegram.js              Bot API 客户端：429 重试 / 错误码映射 / Markdown 降级
 │  ├─ history.js               本地发送历史（IndexedDB），去重查询与写入
@@ -107,7 +124,7 @@ src/
 │  └─ markdown.js              Markdown → MarkdownV2 + 4096 分片
 └─ options/                    配置页（原生 HTML/CSS，无框架）
 
-tests/                         node 测试：纯逻辑 / 去重 / DOM 提取 / 端到端接线
+tests/                         node 测试：纯逻辑 / 队列 / 去重 / DOM 提取 / 端到端接线
 tools/gen_icons.py             零依赖 PNG 图标生成
 ```
 
@@ -115,17 +132,26 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 
 ## 关键设计决策
 
-**1. 不用 Popup。** `chrome.action.onClicked` 直接触发，省掉「打开弹窗 → 再点一次」。代价是没有 UI 承载结果，所以用徽标（`···` / `✓` / `ERR`）+ 悬停文案 + 可选系统通知三重反馈。
+**1. 不用 Popup。** `chrome.action.onClicked` 直接触发，省掉「打开弹窗 → 再点一次」。代价是没有 UI 承载结果，所以用徽标（`···` / `1/3` / `✓` / `SKIP` / `ERR`）+ 悬停文案 + 可选系统通知三重反馈。
 
-**2. 权限最小化。** 只要 `activeTab`（点击时临时授权当前页）+ `scripting` + `offscreen` + `storage` + `notifications`，`host_permissions` 仅 `api.telegram.org`。不申请 `<all_urls>`，安装时不会看到「读取你在所有网站上的数据」。
+**2. 点击即入队，而不是点击即发送。** 早期版本用一个 `busy` 布尔做并发闸门：处理中再点只提示「上一个任务还在处理中」，任务直接丢弃 —— 想一口气存 5 篇时这个行为很难受。现在每次点击都是一个独立任务，进 `src/background/queue.js` 的 FIFO 队列按顺序消费；队列非空期间 Service Worker 用 keep-alive 按住，不会被 30s 空闲回收。提交本身也串成一条 promise 链，否则并发读配置会让入队顺序和点击顺序错位。
 
-**3. 正文提取不用 innerText。** 自己遍历 DOM（`visibleText`），跳过 `script/nav/footer/aside` 以及 class 命中 `comment|related|sidebar|share|promo…` 的子树。容器选择是「文本量达标的候选里取最内层」——否则 `<main>` 会把评论区一起吞进来（这个 bug 是被 `tests/extract.mjs` 抓出来的）。
+两个关键取舍：
 
-**4. 长文 map-reduce。** 超过 9000 字符先按段落切块、逐块出 `tldr`，再把各段摘要合并成 `key-points`。Nano 的上下文窗口很小，直接塞长文会静默截断。
+- **正文在点击瞬间抓**（`capturePage`）。`activeTab` 授权是随点击授予的，排队期间页面可能被关闭、刷新或跳转，等「轮到我」再抓多半已经抓错页。抓完只留正文快照，排队多久都不影响这一篇。
+- **串行而非并发。** Gemini Nano 的 session 只有一份，并发调用会互相挤占；Telegram 侧也有频率限制。串行天然有序，出错也容易定位到具体哪一篇。
 
-**5. MarkdownV2 实体不跨行。** 这是分片的前提。AI 输出的代码围栏会被摊平成普通行、表格降级成 `· a · b`，保证任何一行单独切出去都是合法实体，不会触发 Telegram 的 `can't parse entities`。
+队列满 20 个会拒绝并提示；同一个 URL 已在队列里时不重复入队，避免连点发出两条一样的消息。队列只存在内存里 —— 浏览器退出或扩展重载会丢弃未完成的任务，这是有意的：正文快照没必要持久化，重发一次的成本只是再点一下。
 
-**6. 三层容灾，几乎不会「点了没反应」。**
+**3. 权限最小化。** 只要 `activeTab`（点击时临时授权当前页）+ `scripting` + `offscreen` + `storage` + `notifications`，`host_permissions` 仅 `api.telegram.org`。不申请 `<all_urls>`，安装时不会看到「读取你在所有网站上的数据」。
+
+**4. 正文提取不用 innerText。** 自己遍历 DOM（`visibleText`），跳过 `script/nav/footer/aside` 以及 class 命中 `comment|related|sidebar|share|promo…` 的子树。容器选择是「文本量达标的候选里取最内层」——否则 `<main>` 会把评论区一起吞进来（这个 bug 是被 `tests/extract.mjs` 抓出来的）。
+
+**5. 长文 map-reduce。** 超过 9000 字符先按段落切块、逐块出 `tldr`，再把各段摘要合并成 `key-points`。Nano 的上下文窗口很小，直接塞长文会静默截断。
+
+**6. MarkdownV2 实体不跨行。** 这是分片的前提。AI 输出的代码围栏会被摊平成普通行、表格降级成 `· a · b`，保证任何一行单独切出去都是合法实体，不会触发 Telegram 的 `can't parse entities`。
+
+**7. 三层容灾，几乎不会「点了没反应」。**
 
 | 情况 | 行为 |
 |---|---|
@@ -137,7 +163,7 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | 消息超长 | 按行分片，首片带预览卡片 |
 | 该地址已发送过（开启了去重） | 灰色 `SKIP` 徽标，悬停显示上次发送时间与次数，不发送 |
 
-**7. Session 复用：模型只加载一次。** Gemini Nano 的权重只在**首次**真正下载；但 `Summarizer.create()` 每次都会把约 2GB 权重重新载入内存并重建执行流水线（冷启动），短则数秒、长则几十秒 —— 体感就是「换个网页又下载了一遍」。官方也说了 Summarizer 不像 Prompt API 那样保留上下文，**本来就是设计来跨任务复用的**。
+**8. Session 复用：模型只加载一次。** Gemini Nano 的权重只在**首次**真正下载；但 `Summarizer.create()` 每次都会把约 2GB 权重重新载入内存并重建执行流水线（冷启动），短则数秒、长则几十秒 —— 体感就是「换个网页又下载了一遍」。官方也说了 Summarizer 不像 Prompt API 那样保留上下文，**本来就是设计来跨任务复用的**。
 
 所以 `src/offscreen/ai.js` 维护了一个 session 池：
 
@@ -148,11 +174,11 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 
 改动摘要类型 / 输出语言会产生新的 key，自然重建；设置页保存时也会主动丢弃旧 session。
 
-**8. 视频页走 meta 简介，不走 DOM。** B 站这类页面 DOM 里只有播放器和周边 UI，没有正文。提取器识别 `og:type=video*`（或视频站域名 + `/video/`、`watch?v=` 等路径）后，改用「标题 + UP 主 + 简介」当正文，并剥掉「视频播放量 / 弹幕量 / 投硬币枚数」这类统计尾巴。同时加了一条通用的 UI 提示过滤（「查找并连接设备」「本地网络访问权限」「刷新页面即可」…），避免播放器遮罩在任何站点上被误当正文。连简介都没有的视频页会明确报错，而不是发一堆 UI 文案出去。
+**9. 视频页走 meta 简介，不走 DOM。** B 站这类页面 DOM 里只有播放器和周边 UI，没有正文。提取器识别 `og:type=video*`（或视频站域名 + `/video/`、`watch?v=` 等路径）后，改用「标题 + UP 主 + 简介」当正文，并剥掉「视频播放量 / 弹幕量 / 投硬币枚数」这类统计尾巴。同时加了一条通用的 UI 提示过滤（「查找并连接设备」「本地网络访问权限」「刷新页面即可」…），避免播放器遮罩在任何站点上被误当正文。连简介都没有的视频页会明确报错，而不是发一堆 UI 文案出去。
 
-**9. 硬编码 Token 的取舍。** 自家插件写死 token 免了整条后端链路，但要知道：token 明文存在扩展目录里，能被同机进程读到；`chrome.storage.local` 同样是明文。别把带这个 token 的 crx 传给别人。
+**10. 硬编码 Token 的取舍。** 自家插件写死 token 免了整条后端链路，但要知道：token 明文存在扩展目录里，能被同机进程读到；`chrome.storage.local` 同样是明文。别把带这个 token 的 crx 传给别人。
 
-**10. 去重用 IndexedDB，不用 `chrome.storage.local`。** 过滤剔重需要一张「已发地址」表：开启后，地址发过就直接跳过，连正文提取和 AI 推理都不做（省的是最贵的那几步）。
+**11. 去重用 IndexedDB，不用 `chrome.storage.local`。** 过滤剔重需要一张「已发地址」表：开启后，地址发过就直接跳过，AI 推理和上传都不做（排队模式下正文快照在点击瞬间已抓，省下的正是最贵的那几步；现场抓取的调用路径则连注入都省掉）。
 
 - 存储选型：`storage.local` 是整块 KV，每写一条都要把全表读出来再写回去，几千条就明显卡；IndexedDB 有主键与索引，`get(key)` 是 O(log n)，且 SW 与设置页同源共享同一个库（`paperplane-history`）。
 - 比对前先归一化（`src/lib/url.js`）：去掉 `#锚点`、`utm_*`/`fbclid`/`spm` 等跟踪参数、`www.` 前缀、协议默认端口与末尾斜杠，剩下的查询参数按键排序。所以「同一篇文章的不同分享链接」会命中同一条记录，而 `?p=2` 这类业务参数必须保留（否则分页会被误判成同一页）。
@@ -160,7 +186,7 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 - 只在**发送成功之后**写历史。失败、429 重试、Markdown 降级都不会留下「已发」假记录。
 - 开关关闭时也照常记录，打开开关立刻就有底数，不需要「先跑一周攒数据」。
 - 数据库是缓存性质，坏了不能挡住主流程：读失败按「没发过」处理，写失败只 `console.warn`，环境不支持 IndexedDB 时整体退化为「不去重」。
-- 命中重复抛 `DuplicateError`（带 `duplicate: true`），编排层据此把徽标打成灰色 `SKIP` 而不是红色 `ERR` —— 这是按配置正常工作，不该触发错误通知。
+- 命中重复抛 `DuplicateError`（带 `duplicate: true`），编排层据此把徽标打成灰色 `SKIP` 而不是红色 `ERR` —— 这是按配置正常工作，不该触发错误通知。一批任务里既有发送又有跳过时，跳过单独计数并写进汇总文案，不会被算成失败。
 
 ---
 
@@ -177,6 +203,9 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 | 「这是视频页，但没有可摘要的标题/简介」 | 该视频没有简介，视频本体无法离线提取，属预期行为 |
 | 「Unsupported Summarizer API languages」 | 输出语言选了 Chrome 白名单外的（如 `zh`）。插件会自动省略该参数、让模型跟随原文输出；若仍报错，设置页改选 `English` |
 | 徽标 `SKIP`，什么都没发 | 开了本地去重且该地址发过。设置页「过滤与去重」可关闭，或「清空历史」后重发 |
+| 徽标停在 `2/3`（红色） | 这一批里有 1 篇失败，其余照常发出。悬停看第一篇的原因，失败详情另有一条通知 |
+| 悬停提示「该页面已在队列中」 | 同一个网址连点了两次，第二次被队列去重，不会发出两条一样的消息 |
+| 「队列已满（最多 20 个）」 | 待处理队列满了。等这批发完再点；卡住不动时重新加载扩展（`chrome://extensions` → 刷新）即可清空队列 |
 | 换了个页面也被判成重复 | 归一化只抹掉跟踪参数与斜杠；若确实是不同内容但 URL 壳相同（如详情页靠 `#` 路由），请把去重有效期调小或关闭 |
 | 去重历史读不出来 | 设置页会直接提示「当前环境不支持 IndexedDB」。此时插件退化为不去重，发送功能不受影响 |
 | 模型始终 `unavailable` | `chrome://flags/#optimization-guide-on-device-model` 设 `Enabled BypassPerfRequirement`，再去 `chrome://components` 更新 *Optimization Guide On Device Model*；需 Chrome 127+、磁盘 ≥22GB、显存 ≥4GB |
@@ -188,7 +217,9 @@ tools/gen_icons.py             零依赖 PNG 图标生成
 ## 测试
 
 ```bash
+npm test                 # = smoke + queue + dedupe + wiring
 node tests/smoke.mjs     # 转义 / 排版 / 4096 分片 / 降级摘要
+node tests/queue.mjs     # 队列：串行 / 去重 / 上限 / 容错 / 状态
 node tests/dedupe.mjs    # URL 归一化 / IndexedDB 历史读写 / 命中重复是否提前中止
 node tests/extract.mjs   # 需 jsdom：真实 DOM 上验证正文命中与噪音剔除
 node tests/wiring.mjs    # chrome 桩 + 假网页，跑完整点击链路并校验请求体
@@ -196,13 +227,13 @@ node tests/wiring.mjs    # chrome 桩 + 假网页，跑完整点击链路并校�
 
 `node tests/dedupe.mjs` 会在 node 里装一个极简的假 IndexedDB（`tests/fake-idb.mjs`），所以去重逻辑不用开浏览器就能验：写入 → 换个写法的同一地址命中 → 超期放行 → 清空后重发 → 环境不支持时降级。
 
-`wiring.mjs` 会打印实际发往 Telegram 的 JSON，改排版逻辑后拿它当快照看最直观；它同时覆盖「开启去重后第二次点同一页零请求、徽标转 SKIP」。
+`wiring.mjs` 会打印实际发往 Telegram 的 JSON，改排版逻辑后拿它当快照看最直观；它还覆盖两件事：「开启去重后第二次点同一页零请求、徽标转 SKIP」，以及「连点三个标签页，按点击顺序全部发完、一条不丢」。
 
 ---
 
 ## 隐私
 
-- 网页正文只在本机内存里存在，唯一的出境数据是最终摘要 + 标题 + 链接。
+- 网页正文只在本机内存里存在，唯一的出境数据是最终摘要 + 标题 + 链接。排队时最多同时握着 20 份正文快照，队列跑完即释放，浏览器退出或扩展重载也会丢弃。
 - 去重历史（归一化地址、网页标题、频道、时间戳）只写在浏览器本地 IndexedDB，不上传；设置页可一键清空。
 - 不发任何遥测，不引第三方 CDN，无远程脚本。CSP 保持 MV3 默认。
 - 唯一的外部请求：`POST https://api.telegram.org/bot<TOKEN>/sendMessage`。

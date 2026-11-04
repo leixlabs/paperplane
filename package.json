@@ -1,12 +1,13 @@
 {
   "name": "paperplane",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "Chrome MV3 extension: one-click local-AI page summary to a Telegram channel",
   "scripts": {
-    "test": "node tests/smoke.mjs && node tests/dedupe.mjs && node tests/wiring.mjs",
+    "test": "node tests/smoke.mjs && node tests/queue.mjs && node tests/dedupe.mjs && node tests/wiring.mjs",
     "test:smoke": "node tests/smoke.mjs",
+    "test:queue": "node tests/queue.mjs",
     "test:dedupe": "node tests/dedupe.mjs",
     "test:wiring": "node tests/wiring.mjs",
     "icons": "python3 tools/gen_icons.py"
